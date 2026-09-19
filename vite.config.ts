@@ -15,4 +15,7 @@ export default defineConfig({
   fmt: {
     singleQuote: true,
   },
+  staged: {
+    '*.{js,ts}': 'vp check --fix',
+  },
 });

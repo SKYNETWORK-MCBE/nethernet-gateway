@@ -21,7 +21,8 @@
     "build": "vp pack",
     "check": "vp check",
     "test": "vp test run",
-    "format": "vp fmt"
+    "format": "vp fmt",
+    "prepare": "vp config"
   },
   "dependencies": {
     "httpxy": "^0.5.5",

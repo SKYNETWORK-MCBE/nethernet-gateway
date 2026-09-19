@@ -184,6 +184,7 @@ Authentication failures and other expected `4xx` responses are not emitted.
 - A decoded JWT is not an authenticated identity. Verify its signature and expected claims in `verifyClientToken`.
 - Invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
 - SDP offers larger than 1 MiB are rejected with `413`.
+- To hide the global IP address of the backend, override ICE candidate. (See the "Rewrite ICE candidates" section.)
 
 ## Acknowledgements
 

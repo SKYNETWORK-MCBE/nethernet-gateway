@@ -40,5 +40,9 @@
       "onFail": "download"
     }
   },
-  "packageManager": "pnpm@12.4.2"
+  "packageManager": "pnpm@12.4.2",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SKYNETWORK-MCBE/nethernet-gateway.git"
+  }
 }

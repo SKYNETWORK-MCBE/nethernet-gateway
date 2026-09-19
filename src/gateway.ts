@@ -175,6 +175,9 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   }
 
   private async proxy(request: Request): Promise<Response> {
+    // Middleware may have replaced the body, so let the transport recompute the length.
+    request.headers.delete('content-length');
+
     try {
       return await proxyFetch(this.options.upstream, request);
     } catch (error) {
@@ -188,7 +191,9 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     context: Context,
   ): Promise<Response> {
     try {
-      return await runMiddleware(middleware, context, () => this.proxy(context.request.clone()));
+      return await runMiddleware(middleware, context, (request) =>
+        this.proxy((request ?? context.request).clone()),
+      );
     } catch (error) {
       this.emitRequestError('middleware', error, context.request.method, context.request.url);
       return new Response('Internal Server Error', { status: 500 });
@@ -212,12 +217,16 @@ async function runMiddleware<Context extends GatewayContext>(
 ): Promise<Response> {
   let lastIndex = -1;
 
-  const dispatch = async (index: number): Promise<Response> => {
+  const dispatch = async (index: number, context: Context): Promise<Response> => {
     if (index <= lastIndex) throw new Error('next() called multiple times');
     lastIndex = index;
 
     const current = middleware[index];
-    const response = current ? await current(context, () => dispatch(index + 1)) : await terminal();
+    const response = current
+      ? await current(context, async (override) =>
+          dispatch(index + 1, override ? await replaceRequest(context, override) : context),
+        )
+      : await terminal(context.request);
 
     if (!(response instanceof Response)) {
       throw new TypeError('Gateway middleware must return a Response');
@@ -225,5 +234,13 @@ async function runMiddleware<Context extends GatewayContext>(
     return response;
   };
 
-  return dispatch(0);
+  return dispatch(0, context);
+}
+
+async function replaceRequest<Context extends GatewayContext>(
+  context: Context,
+  request: Request,
+): Promise<Context> {
+  const replaced = { ...context, request };
+  return 'offer' in context ? { ...replaced, offer: await request.clone().text() } : replaced;
 }

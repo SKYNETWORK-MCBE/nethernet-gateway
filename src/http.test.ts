@@ -45,6 +45,25 @@ describe('HTTP adapters', () => {
     });
   });
 
+  // RFC 9110 section 8.6: a 204 carries no length, and a 304 keeps the one it was given.
+  it.each([
+    [200, 'rewritten', '9'],
+    [204, '', null],
+    [304, '', '5000'],
+  ])('writes the content length of a %s response', async (status, body, expected) => {
+    const address = await serve(async (_incoming, response) => {
+      await writeResponse(
+        response,
+        new Response(body || null, { status, headers: { 'content-length': '5000' } }),
+      );
+    });
+
+    const response = await fetch(address);
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get('content-length')).toBe(expected);
+  });
+
   it('enforces the body limit from both the declared and streamed byte counts', async () => {
     const declared = incomingStream([], { 'content-length': String(1024 * 1024 + 1) });
     await expect(readBody(declared)).rejects.toBeInstanceOf(RequestTooLargeError);

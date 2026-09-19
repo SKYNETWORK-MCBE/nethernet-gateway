@@ -47,11 +47,23 @@ describe('rewriteAnswerCandidates', () => {
     ]);
   });
 
-  it('drops private host candidates and never readdresses the routable ones', () => {
+  it('drops private host candidates and readdresses the routable ones', () => {
     expect(candidatesOf(rewriteAnswerCandidates(sdp(...HOSTS), ADVERTISE))).toEqual([
-      HOSTS[2],
-      HOSTS[3],
+      `a=candidate:2850521474 1 udp 2122262783 ${ADVERTISE} 51596 typ host generation 0 network-id 3`,
+      `a=candidate:2821663040 1 udp 2122197247 ${ADVERTISE} 51597 typ host generation 0 network-id 4`,
     ]);
+  });
+
+  // A server on a public address gathers one host candidate and no reflexive candidate at all,
+  // so this is the shape that used to hand the client the upstream server's own address.
+  it('readdresses a lone public host candidate', () => {
+    const host = 'a=candidate:1 1 udp 2122260223 198.51.100.9 19132 typ host generation 0';
+    const result = rewriteAnswerCandidates(sdp(host), ADVERTISE);
+
+    expect(candidatesOf(result)).toEqual([
+      `a=candidate:1 1 udp 2122260223 ${ADVERTISE} 19132 typ host generation 0`,
+    ]);
+    expect(result).not.toContain('198.51.100.9');
   });
 
   it('drops host candidates once a NAT-traversing candidate exists', () => {

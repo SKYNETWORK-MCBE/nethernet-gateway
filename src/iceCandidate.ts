@@ -33,7 +33,7 @@ export function rewriteAnswerCandidates(sdp: string, advertise: string, failOpen
     if (hasNonHost && candidate.type === 'host') continue;
 
     const fields = candidate.fields.slice();
-    if (advertise && candidate.type !== 'host') fields[ADDRESS] = advertise;
+    if (advertise) fields[ADDRESS] = advertise;
     scrubRelated(fields);
 
     // Readdressing collapses the per-interface candidates into duplicates of one transport address.

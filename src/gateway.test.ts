@@ -111,6 +111,30 @@ describe('NetherNetGateway', () => {
     expect(response.headers.get('content-type')).toBe('application/sdp');
   });
 
+  it('hands the replaced offer to the middleware below it', async () => {
+    let received: string | undefined;
+    const upstream = await serve(async (request, response) => {
+      received = await body(request);
+      response.end('answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const seen: { offer: string; body: string }[] = [];
+
+    gateway.use('join', (context, next) =>
+      next(new Request(context.request, { method: 'POST', body: `rewritten ${context.offer}` })),
+    );
+    gateway.use('join', async (context, next) => {
+      seen.push({ offer: context.offer, body: await context.request.clone().text() });
+      return next();
+    });
+
+    const address = await serve(gateway.handleRequest.bind(gateway));
+    await fetch(`${address}/v1/join/1`, { method: 'POST', body: 'offer' });
+
+    expect(seen).toEqual([{ offer: 'rewritten offer', body: 'rewritten offer' }]);
+    expect(received).toBe('rewritten offer');
+  });
+
   it('supports optional and required client identity modes', async () => {
     const upstream = await serve((_request, response) => {
       response.end('answer');

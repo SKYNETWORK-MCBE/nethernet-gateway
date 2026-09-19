@@ -217,14 +217,16 @@ async function runMiddleware<Context extends GatewayContext>(
 ): Promise<Response> {
   let lastIndex = -1;
 
-  const dispatch = async (index: number, request?: Request): Promise<Response> => {
+  const dispatch = async (index: number, context: Context): Promise<Response> => {
     if (index <= lastIndex) throw new Error('next() called multiple times');
     lastIndex = index;
 
     const current = middleware[index];
     const response = current
-      ? await current(context, (override) => dispatch(index + 1, override ?? request))
-      : await terminal(request);
+      ? await current(context, async (override) =>
+          dispatch(index + 1, override ? await replaceRequest(context, override) : context),
+        )
+      : await terminal(context.request);
 
     if (!(response instanceof Response)) {
       throw new TypeError('Gateway middleware must return a Response');
@@ -232,5 +234,13 @@ async function runMiddleware<Context extends GatewayContext>(
     return response;
   };
 
-  return dispatch(0);
+  return dispatch(0, context);
+}
+
+async function replaceRequest<Context extends GatewayContext>(
+  context: Context,
+  request: Request,
+): Promise<Context> {
+  const replaced = { ...context, request };
+  return 'offer' in context ? { ...replaced, offer: await request.clone().text() } : replaced;
 }

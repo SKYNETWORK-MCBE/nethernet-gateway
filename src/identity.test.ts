@@ -1,0 +1,115 @@
+import { exportJWK, FlattenedSign, generateKeyPair, type JWK } from 'jose';
+import { describe, expect, it } from 'vite-plus/test';
+import { verifyClientIdentity } from './identity';
+import type { NetherNetIdentity } from './types';
+
+describe('verifyClientIdentity', () => {
+  it('returns identity after token and fingerprint verification', async () => {
+    const signedOffer = await createSignedOffer();
+    const expected = identity(signedOffer.publicKey);
+    let verifiedToken: string | undefined;
+
+    const result = await verifyClientIdentity(signedOffer.offer, (token) => {
+      verifiedToken = token;
+      return expected;
+    });
+
+    expect(verifiedToken).toBe('verified-token');
+    expect(result).toEqual(expected);
+  });
+
+  it('rejects fingerprints that do not match the detached signature', async () => {
+    const signedOffer = await createSignedOffer();
+
+    await expect(
+      verifyClientIdentity(signedOffer.offer.replace('AA:BB:CC', '00:BB:CC'), () =>
+        identity(signedOffer.publicKey),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('returns no identity when the offer has no assertion', async () => {
+    let verifierCalled = false;
+
+    const result = await verifyClientIdentity('v=0\r\nm=application 9 UDP/DTLS/SCTP', () => {
+      verifierCalled = true;
+      throw new Error('should not be called');
+    });
+
+    expect(result).toBeUndefined();
+    expect(verifierCalled).toBe(false);
+  });
+
+  it('requires one session-level identity attribute', async () => {
+    const assertion = encodeAssertion();
+    const misplaced = [
+      'v=0',
+      'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+      `a=identity:${assertion}`,
+    ].join('\r\n');
+
+    await expect(
+      verifyClientIdentity(misplaced, () => {
+        throw new Error('should not be called');
+      }),
+    ).rejects.toThrow('Identity must be session-level');
+
+    const duplicate = [
+      'v=0',
+      `a=identity:${assertion}`,
+      `a=identity:${assertion}`,
+      'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+    ].join('\r\n');
+
+    await expect(
+      verifyClientIdentity(duplicate, () => {
+        throw new Error('should not be called');
+      }),
+    ).rejects.toThrow('Multiple identity assertions');
+  });
+});
+
+async function createSignedOffer(): Promise<{ offer: string; publicKey: JWK }> {
+  const fingerprint = { algorithm: 'sha-256', digest: 'AA:BB:CC' };
+  const { privateKey, publicKey } = await generateKeyPair('ES384', { extractable: true });
+  const signed = await new FlattenedSign(
+    new TextEncoder().encode(JSON.stringify({ fingerprint: [fingerprint] })),
+  )
+    .setProtectedHeader({ alg: 'ES384' })
+    .sign(privateKey);
+  const envelope = {
+    idp: { domain: 'auth.example', protocol: 'default' },
+    assertion: JSON.stringify({
+      token: 'verified-token',
+      fingerprints: `${signed.protected}..${signed.signature}`,
+    }),
+  };
+
+  return {
+    offer: [
+      'v=0',
+      `a=fingerprint:${fingerprint.algorithm} ${fingerprint.digest}`,
+      `a=identity:${Buffer.from(JSON.stringify(envelope)).toString('base64')}`,
+      'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+      '',
+    ].join('\r\n'),
+    publicKey: await exportJWK(publicKey),
+  };
+}
+
+function encodeAssertion(): string {
+  return Buffer.from(
+    JSON.stringify({
+      idp: { domain: 'auth.example', protocol: 'default' },
+      assertion: JSON.stringify({ token: 'token', fingerprints: 'unused' }),
+    }),
+  ).toString('base64');
+}
+
+function identity(cpk: JWK): NetherNetIdentity {
+  return {
+    xuid: '2533274790000000',
+    cpk,
+    claims: { xid: '2533274790000000', cpk },
+  };
+}

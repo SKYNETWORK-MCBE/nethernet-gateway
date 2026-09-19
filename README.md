@@ -31,7 +31,7 @@ Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
 ## Middleware
 
-Server information and join attempts have separate middleware stacks. Middleware can return its own response or call `next()` to receive and modify the downstream response.
+Server information and join attempts have separate middleware stacks. Middleware can return its own response or call `next()` to receive and modify the downstream response. A join middleware can also pass a replacement request to `next()` to change the offer that reaches the upstream server.
 
 ### Change server information
 
@@ -128,6 +128,28 @@ const gateway = new NetherNetGateway({
   requireClientIdentity: true,
 });
 ```
+
+### Rewrite ICE candidates
+
+A gateway that does not share an address with the game server leaves both sides advertising ICE candidates the other cannot reach. `rewriteAnswerCandidates` keeps only the routable candidates in the upstream answer, drops host candidates once a NAT-traversing candidate exists, blanks the related address, and readdresses the survivors to the gateway. `stripOfferCandidates` removes the client's candidates from the offer; pass the replacement request to `next()` to send it upstream.
+
+```ts
+import { NetherNetGateway, rewriteAnswerCandidates, stripOfferCandidates } from 'nethernet-gateway';
+
+const gateway = new NetherNetGateway({
+  upstream: 'http://127.0.0.1:19132',
+});
+
+gateway.use('join', async (context, next) => {
+  const offer = stripOfferCandidates(context.offer);
+  const response = await next(new Request(context.request, { method: 'POST', body: offer }));
+  const answer = rewriteAnswerCandidates(await response.text(), '203.0.113.10');
+
+  return new Response(answer, response);
+});
+```
+
+Candidates are readdressed only when the second argument is a non-empty address; pass `''` to filter without rewriting. When no candidate survives, the answer is returned unchanged so the connection can still complete. Pass `false` as the third argument to drop the candidates instead.
 
 ## Use an existing Node server
 

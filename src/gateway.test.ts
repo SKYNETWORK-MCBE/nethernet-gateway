@@ -85,6 +85,32 @@ describe('NetherNetGateway', () => {
     });
   });
 
+  it('lets join middleware replace the offer and the answer', async () => {
+    let received: string | undefined;
+    const upstream = await serve(async (request, response) => {
+      received = await body(request);
+      response.setHeader('content-type', 'application/sdp');
+      response.end('a long upstream answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    gateway.use('join', async (context, next) => {
+      const replaced = new Request(context.request, {
+        method: 'POST',
+        body: `rewritten ${context.offer}`,
+      });
+      const response = await next(replaced);
+
+      return new Response((await response.text()).slice(0, 6), response);
+    });
+
+    const address = await serve(gateway.handleRequest.bind(gateway));
+    const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: 'offer' });
+
+    expect(received).toBe('rewritten offer');
+    expect(await response.text()).toBe('a long');
+    expect(response.headers.get('content-type')).toBe('application/sdp');
+  });
+
   it('supports optional and required client identity modes', async () => {
     const upstream = await serve((_request, response) => {
       response.end('answer');

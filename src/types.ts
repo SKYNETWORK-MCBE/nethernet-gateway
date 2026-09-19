@@ -41,7 +41,8 @@ export interface JoinContext {
 }
 
 export type GatewayContext = ServerInfoContext | JoinContext;
-export type Next = () => Promise<Response>;
+// A join middleware can pass a replacement request to change the offer sent upstream.
+export type Next = (request?: Request) => Promise<Response>;
 export type GatewayMiddleware<Context extends GatewayContext> = (
   context: Context,
   next: Next,

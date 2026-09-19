@@ -41,8 +41,11 @@ export async function readBody(request: IncomingMessage): Promise<string> {
 }
 
 export async function writeResponse(response: ServerResponse, result: Response): Promise<void> {
+  const body = Buffer.from(await result.arrayBuffer());
   response.statusCode = result.status;
   response.statusMessage = result.statusText;
   result.headers.forEach((value, name) => response.setHeader(name, value));
-  response.end(Buffer.from(await result.arrayBuffer()));
+  // Middleware may have replaced the body, so the upstream length no longer describes it.
+  response.setHeader('content-length', body.length);
+  response.end(body);
 }

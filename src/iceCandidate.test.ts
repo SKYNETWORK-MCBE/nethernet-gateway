@@ -3,6 +3,7 @@ import { rewriteAnswerCandidates, stripOfferCandidates } from './iceCandidate';
 
 // Addresses are RFC 5737 / RFC 3849 documentation ranges and the identity blob is a stub.
 const ADVERTISE = '203.0.113.10';
+const ADVERTISE_V6 = '2001:db8:142:be52:3fc0:6fa7:f85a:5a07';
 const IDENTITY = 'eyJpZHAiOnsiZG9tYWluIjoiYXV0aC5leGFtcGxlIn19';
 
 const HOSTS = [
@@ -109,6 +110,30 @@ describe('rewriteAnswerCandidates', () => {
     expect(candidatesOf(rewriteAnswerCandidates(sdp(candidate), '', false))).toEqual(
       routable ? [candidate] : [],
     );
+  });
+
+  it('scrubs the related address and port of a readdressed candidate', () => {
+    const candidates = [
+      `a=candidate:3387171477 1 udp 1685790463 123.124.125.126 49132 typ srflx raddr 172.29.112.1 rport 19132 generation 0 network-id 1`,
+      `a=candidate:3387171477 1 udp 1685724927 123.124.125.126 49132 typ srflx raddr 192.168.0.11 rport 19132 generation 0 network-id 2`,
+      `a=candidate:3387171477 1 udp 1686052607 2000::1 49132 typ srflx raddr 172.29.112.1 rport 19132 generation 0 network-id 3`,
+      `a=candidate:3387171477 1 udp 1685987071 2000::1 49132 typ srflx raddr 192.168.0.11 rport 19132 generation 0 network-id 4`,
+    ];
+
+    const v4 = candidates.map(line => rewriteAnswerCandidates(sdp(line), ADVERTISE))
+    .flatMap(sdp => candidatesOf(sdp));
+    for (const candidate of v4) {
+      expect(candidate).toContain("0.0.0.0");
+      expect(candidate).not.toContain('::');
+    }
+
+    const v6 = candidates.map(line => rewriteAnswerCandidates(sdp(line), ADVERTISE_V6))
+    .flatMap(sdp => candidatesOf(sdp));
+    for (const candidate of v6) {
+      expect(candidate).toContain("::");
+      expect(candidate).not.toContain('0.0.0.0');
+    }
+
   });
 });
 

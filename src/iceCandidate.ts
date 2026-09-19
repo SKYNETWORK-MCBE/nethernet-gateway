@@ -53,7 +53,8 @@ export function rewriteAnswerCandidates(sdp: string, advertise: string, failOpen
 
     const fields = candidate.fields.slice();
     if (advertise) fields[ADDRESS] = advertise;
-    scrubRelated(fields);
+    const type = isIP(advertise) === 4 ? IpType.v4 : IpType.v6;
+    scrubRelated(fields, type);
 
     // Readdressing collapses the per-interface candidates into duplicates of one transport address.
     const key = [candidate.transport, fields[ADDRESS], candidate.port, candidate.type].join(' ');
@@ -102,10 +103,17 @@ function isPrivateAddress(address: string): boolean {
   return family !== 0 && PRIVATE.check(address, family === 4 ? 'ipv4' : 'ipv6');
 }
 
+const IpType = {
+  v4: 'ipv4',
+  v6: 'ipv6',
+} as const;
+type IpType = (typeof IpType)[keyof typeof IpType];
+
+
 // ICE uses the related address for diagnostics only, and it exposes the peer's pre-NAT address.
-function scrubRelated(fields: string[]): void {
+function scrubRelated(fields: string[], type: IpType): void {
   for (let i = 8; i + 1 < fields.length; i += 2) {
-    if (fields[i] === 'raddr') fields[i + 1] = '0.0.0.0';
+    if (fields[i] === 'raddr') fields[i + 1] = type === IpType.v4 ? '0.0.0.0' : '::';
     else if (fields[i] === 'rport') fields[i + 1] = '0';
   }
 }

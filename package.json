@@ -9,6 +9,10 @@
   ],
   "license": "MIT",
   "author": "",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SKYNETWORK-MCBE/nethernet-gateway.git"
+  },
   "files": [
     "dist"
   ],
@@ -40,9 +44,5 @@
       "onFail": "download"
     }
   },
-  "packageManager": "pnpm@12.4.2",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/SKYNETWORK-MCBE/nethernet-gateway.git"
-  }
+  "packageManager": "pnpm@12.4.2"
 }

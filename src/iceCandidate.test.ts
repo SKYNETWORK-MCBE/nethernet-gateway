@@ -120,20 +120,21 @@ describe('rewriteAnswerCandidates', () => {
       `a=candidate:3387171477 1 udp 1685987071 2000::1 49132 typ srflx raddr 192.168.0.11 rport 19132 generation 0 network-id 4`,
     ];
 
-    const v4 = candidates.map(line => rewriteAnswerCandidates(sdp(line), ADVERTISE))
-    .flatMap(sdp => candidatesOf(sdp));
+    const v4 = candidates
+      .map((line) => rewriteAnswerCandidates(sdp(line), ADVERTISE))
+      .flatMap((sdp) => candidatesOf(sdp));
     for (const candidate of v4) {
-      expect(candidate).toContain("0.0.0.0");
+      expect(candidate).toContain('0.0.0.0');
       expect(candidate).not.toContain('::');
     }
 
-    const v6 = candidates.map(line => rewriteAnswerCandidates(sdp(line), ADVERTISE_V6))
-    .flatMap(sdp => candidatesOf(sdp));
+    const v6 = candidates
+      .map((line) => rewriteAnswerCandidates(sdp(line), ADVERTISE_V6))
+      .flatMap((sdp) => candidatesOf(sdp));
     for (const candidate of v6) {
-      expect(candidate).toContain("::");
+      expect(candidate).toContain('::');
       expect(candidate).not.toContain('0.0.0.0');
     }
-
   });
 });
 

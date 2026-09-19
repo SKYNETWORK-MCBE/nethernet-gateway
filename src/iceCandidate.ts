@@ -109,7 +109,6 @@ const IpType = {
 } as const;
 type IpType = (typeof IpType)[keyof typeof IpType];
 
-
 // ICE uses the related address for diagnostics only, and it exposes the peer's pre-NAT address.
 function scrubRelated(fields: string[], type: IpType): void {
   for (let i = 8; i + 1 < fields.length; i += 2) {

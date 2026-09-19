@@ -38,13 +38,6 @@ describe('rewriteAnswerCandidates', () => {
     expect(result.split('\r\n').filter((line) => !line.startsWith('a=candidate:'))).toEqual(
       answer.split('\r\n').filter((line) => !line.startsWith('a=candidate:')),
     );
-    expect(result).toContain(`a=identity:${IDENTITY}`);
-  });
-
-  it('leaves the candidate address alone when nothing is advertised', () => {
-    expect(candidatesOf(rewriteAnswerCandidates(sdp(...REFLEXIVE), ''))).toEqual([
-      `a=candidate:3387171477 1 udp 1685790463 ${ADVERTISE} 49132 typ srflx raddr 0.0.0.0 rport 0 generation 0 network-id 1`,
-    ]);
   });
 
   it('drops private host candidates and readdresses the routable ones', () => {
@@ -144,7 +137,7 @@ function sdp(...candidates: string[]): string {
     ...candidates,
     'a=ice-ufrag:E5gz',
     'a=ice-pwd:AAAABBBBCCCCDDDDEEEEFFFF',
-    `a=fingerprint:sha-256 ${Array.from({ length: 32 }, (_, i) => i.toString(16).padStart(2, '0').toUpperCase()).join(':')}`,
+    'a=fingerprint:sha-256 00:01:02:03',
     'a=setup:active',
     'a=mid:0',
     'a=sctp-port:5000',

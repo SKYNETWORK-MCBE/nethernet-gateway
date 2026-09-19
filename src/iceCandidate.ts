@@ -1,6 +1,27 @@
+import { BlockList, isIP } from 'node:net';
+
 const CANDIDATE = 'a=candidate:';
 // a=candidate:<foundation> <component> <transport> <priority> <address> <port> typ <type> [...extensions]
 const ADDRESS = 4;
+
+// The ranges a remote client cannot reach, matched by node:net rather than by hand.
+const PRIVATE = new BlockList();
+for (const subnet of [
+  '0.0.0.0/8',
+  '10.0.0.0/8',
+  '100.64.0.0/10', // CGNAT
+  '127.0.0.0/8',
+  '169.254.0.0/16',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  '::/128',
+  '::1/128',
+  'fc00::/7',
+  'fe80::/10',
+]) {
+  const [address, prefix] = subnet.split('/');
+  PRIVATE.addSubnet(address, Number(prefix), address.includes(':') ? 'ipv6' : 'ipv4');
+}
 
 interface Candidate {
   fields: string[];
@@ -22,8 +43,6 @@ export function rewriteAnswerCandidates(sdp: string, advertise: string, failOpen
     const candidate = parseCandidate(line);
     if (candidate) candidates.push([index, candidate]);
   });
-  if (candidates.length === 0) return sdp;
-
   const routable = candidates.filter(([, candidate]) => !isPrivateAddress(candidate.address));
   const hasNonHost = routable.some(([, candidate]) => candidate.type !== 'host');
 
@@ -76,31 +95,11 @@ function parseCandidate(line: string): Candidate | undefined {
   };
 }
 
-function isPrivateV4(address: string): boolean {
-  const parts = address.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !(part >= 0 && part <= 255))) return false;
-
-  const [a, b] = parts;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254) ||
-    (a === 100 && b >= 64 && b <= 127) // CGNAT
-  );
-}
-
 function isPrivateAddress(address: string): boolean {
-  const a = address.toLowerCase();
-  if (a.endsWith('.local')) return true; // mDNS
-  if (!a.includes(':')) return isPrivateV4(a);
-  if (a === '::' || a === '::1') return true;
-  if (a.startsWith('::ffff:')) return isPrivateV4(a.slice('::ffff:'.length));
+  if (address.toLowerCase().endsWith('.local')) return true; // mDNS
 
-  const high = parseInt(a.split(':')[0] || '0', 16);
-  return (high & 0xfe00) === 0xfc00 || (high & 0xffc0) === 0xfe80; // fc00::/7, fe80::/10
+  const family = isIP(address);
+  return family !== 0 && PRIVATE.check(address, family === 4 ? 'ipv4' : 'ipv6');
 }
 
 // ICE uses the related address for diagnostics only, and it exposes the peer's pre-NAT address.

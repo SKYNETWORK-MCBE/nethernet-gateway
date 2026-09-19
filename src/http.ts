@@ -45,7 +45,11 @@ export async function writeResponse(response: ServerResponse, result: Response):
   response.statusCode = result.status;
   response.statusMessage = result.statusText;
   result.headers.forEach((value, name) => response.setHeader(name, value));
-  // Middleware may have replaced the body, so the upstream length no longer describes it.
-  response.setHeader('content-length', body.length);
+  // Middleware may have replaced the body, so the upstream length no longer describes it. RFC 9110
+  // §8.6 keeps a 204 from carrying the field at all, and leaves a 304 describing the representation
+  // it stands in for rather than the empty body it sends.
+  // If the status is 304, the runtime will throw a TypeError, so we don't need to remove the header ourselves.
+  if (result.status === 204) response.removeHeader('content-length');
+  else if (result.status !== 304) response.setHeader('content-length', body.length);
   response.end(body);
 }

@@ -28,7 +28,7 @@ describe('rewriteAnswerCandidates', () => {
     const result = candidatesOf(rewriteAnswerCandidates(sdp(...REFLEXIVE), ADVERTISE));
 
     expect(result).toEqual([
-      `a=candidate:3387171477 1 udp 1685790463 ${ADVERTISE} 49132 typ srflx raddr 0.0.0.0 rport 0 generation 0 network-id 1`,
+      `a=candidate:3387171477 1 udp 1685790463 ${ADVERTISE} 49132 typ srflx raddr 0.0.0.0 rport 9 generation 0 network-id 1`,
     ]);
   });
 

@@ -114,6 +114,6 @@ type IpType = (typeof IpType)[keyof typeof IpType];
 function scrubRelated(fields: string[], type: IpType): void {
   for (let i = 8; i + 1 < fields.length; i += 2) {
     if (fields[i] === 'raddr') fields[i + 1] = type === IpType.v4 ? '0.0.0.0' : '::';
-    else if (fields[i] === 'rport') fields[i + 1] = '0';
+    else if (fields[i] === 'rport') fields[i + 1] = '9';
   }
 }

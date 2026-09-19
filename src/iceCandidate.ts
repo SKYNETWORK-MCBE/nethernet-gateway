@@ -1,6 +1,6 @@
 import { BlockList, isIP } from 'node:net';
 
-const CANDIDATE = 'a=candidate:';
+const CANDIDATE_PREFIX = 'a=candidate:';
 // a=candidate:<foundation> <component> <transport> <priority> <address> <port> typ <type> [...extensions]
 const ADDRESS = 4;
 
@@ -59,7 +59,7 @@ export function rewriteAnswerCandidates(sdp: string, advertise: string, failOpen
     const key = [candidate.transport, fields[ADDRESS], candidate.port, candidate.type].join(' ');
     if (seen.has(key)) continue;
     seen.add(key);
-    kept.set(index, CANDIDATE + fields.join(' '));
+    kept.set(index, CANDIDATE_PREFIX + fields.join(' '));
   }
   if (kept.size === 0 && failOpen) return sdp;
 
@@ -67,7 +67,7 @@ export function rewriteAnswerCandidates(sdp: string, advertise: string, failOpen
   lines.forEach((line, index) => {
     const rewritten = kept.get(index);
     if (rewritten !== undefined) out.push(rewritten);
-    else if (!line.startsWith(CANDIDATE)) out.push(line);
+    else if (!line.startsWith(CANDIDATE_PREFIX)) out.push(line);
   });
   return out.join('\r\n');
 }
@@ -76,14 +76,14 @@ export function rewriteAnswerCandidates(sdp: string, advertise: string, failOpen
 export function stripOfferCandidates(sdp: string): string {
   return sdp
     .split(/\r?\n/u)
-    .filter((line) => !line.startsWith(CANDIDATE))
+    .filter((line) => !line.startsWith(CANDIDATE_PREFIX))
     .join('\r\n');
 }
 
 function parseCandidate(line: string): Candidate | undefined {
-  if (!line.startsWith(CANDIDATE)) return undefined;
+  if (!line.startsWith(CANDIDATE_PREFIX)) return undefined;
 
-  const fields = line.slice(CANDIDATE.length).split(' ');
+  const fields = line.slice(CANDIDATE_PREFIX.length).split(' ');
   if (fields.length < 8 || fields[6] !== 'typ') return undefined;
 
   return {

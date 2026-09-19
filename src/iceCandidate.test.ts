@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { rewriteAnswerCandidates, stripOfferCandidates } from './sdpCandidate';
+import { rewriteAnswerCandidates, stripOfferCandidates } from './iceCandidate';
 
 // Addresses are RFC 5737 / RFC 3849 documentation ranges and the identity blob is a stub.
 const ADVERTISE = '203.0.113.10';

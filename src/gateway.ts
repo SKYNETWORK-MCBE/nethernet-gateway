@@ -67,29 +67,36 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     const url = incoming.url ?? '/';
 
     let result: Response;
-    try {
-      const request = createRequest(incoming);
-      const context: GatewayContext = { request, url: new URL(request.url) };
-
+    if (method === 'CONNECT' || method === 'TRACE' || method === 'TRACK') {
+      incoming.resume();
+      result = new Response('Not Found', { status: 404 });
+    } else {
       try {
-        result = await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
-          try {
-            return await this.dispatch(requestContext);
-          } catch (error) {
-            this.emitRequestError('request', error, method, url);
-            return new Response('Internal Server Error', { status: 500 });
-          }
-        });
-      } catch (error) {
-        this.emitRequestError('middleware', error, method, url);
-        result = new Response('Internal Server Error', { status: 500 });
-      }
-    } catch (error) {
-      this.emitRequestError('request', error, method, url);
-      result = new Response('Internal Server Error', { status: 500 });
-    }
+        const request = await createRequest(incoming);
+        const context: GatewayContext = { request, url: new URL(request.url) };
 
-    incoming.resume();
+        try {
+          result = await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
+            try {
+              return await this.dispatch(requestContext);
+            } catch (error) {
+              this.emitRequestError('request', error, method, url);
+              return new Response('Internal Server Error', { status: 500 });
+            }
+          });
+        } catch (error) {
+          this.emitRequestError('middleware', error, method, url);
+          result = new Response('Internal Server Error', { status: 500 });
+        }
+      } catch (error) {
+        if (error instanceof RequestTooLargeError) {
+          result = new Response('Request body is too large', { status: 413 });
+        } else {
+          this.emitRequestError('request', error, method, url);
+          result = new Response('Internal Server Error', { status: 500 });
+        }
+      }
+    }
 
     try {
       await writeResponse(response, result);

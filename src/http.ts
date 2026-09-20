@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { Readable } from 'node:stream';
 
 const MAX_OFFER_BYTES = 1024 * 1024;
 
@@ -9,19 +8,25 @@ function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
 }
 
-export function createRequest(incoming: IncomingMessage): Request {
+export async function createRequest(incoming: IncomingMessage): Promise<Request> {
   const headers = new Headers();
   for (let index = 0; index < incoming.rawHeaders.length; index += 2) {
     headers.append(incoming.rawHeaders[index], incoming.rawHeaders[index + 1]);
   }
 
-  const init: RequestInit & { duplex?: 'half' } = {
+  // Buffer at the Node boundary so middleware can clone the request and the socket can be reused.
+  const body = await readIncomingBody(incoming);
+  headers.delete('transfer-encoding');
+
+  const init: RequestInit = {
     method: incoming.method,
     headers,
   };
   if (incoming.method !== 'GET' && incoming.method !== 'HEAD') {
-    init.body = Readable.toWeb(incoming) as ReadableStream<Uint8Array>;
-    init.duplex = 'half';
+    headers.set('content-length', String(body.byteLength));
+    init.body = new Uint8Array(body);
+  } else {
+    headers.delete('content-length');
   }
 
   return new Request(requestUrl(incoming), init);
@@ -33,28 +38,34 @@ export async function readBody(request: Request): Promise<string> {
     throw new RequestTooLargeError();
   }
 
-  // Enforce README's 1 MiB limit while streaming, including requests without a declared length:
-  // [Security](../README.md#security)
-  const chunks: Buffer[] = [];
-  let length = 0;
-  const reader = request.body?.getReader();
-  if (!reader) return '';
+  const body = Buffer.from(await request.arrayBuffer());
+  if (body.byteLength > MAX_OFFER_BYTES) throw new RequestTooLargeError();
+  return body.toString('utf8');
+}
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const buffer = Buffer.from(value);
-      length += buffer.length;
-      if (length > MAX_OFFER_BYTES) throw new RequestTooLargeError();
-      chunks.push(buffer);
-    }
-  } catch (error) {
-    void reader.cancel();
-    throw error;
+async function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {
+  const declaredLength = Number(incoming.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_OFFER_BYTES) {
+    incoming.resume();
+    throw new RequestTooLargeError();
   }
 
-  return Buffer.concat(chunks).toString('utf8');
+  const chunks: Buffer[] = [];
+  let length = 0;
+  let tooLarge = false;
+  for await (const chunk of incoming) {
+    const buffer = Buffer.from(chunk);
+    length += buffer.byteLength;
+    if (length > MAX_OFFER_BYTES) {
+      tooLarge = true;
+      chunks.length = 0;
+    } else if (!tooLarge) {
+      chunks.push(buffer);
+    }
+  }
+
+  if (tooLarge) throw new RequestTooLargeError();
+  return Buffer.concat(chunks, length);
 }
 
 export async function writeResponse(response: ServerResponse, result: Response): Promise<void> {

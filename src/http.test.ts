@@ -11,7 +11,7 @@ afterEach(async () => {
 describe('HTTP adapters', () => {
   it('converts incoming requests and writes Fetch responses', async () => {
     const address = await serve(async (incoming, response) => {
-      const request = createRequest(incoming);
+      const request = await createRequest(incoming);
       await writeResponse(
         response,
         Response.json(

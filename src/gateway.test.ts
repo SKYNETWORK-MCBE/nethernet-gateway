@@ -1,4 +1,12 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import {
+  Agent,
+  createServer,
+  type IncomingMessage,
+  request as httpRequest,
+  type Server,
+  type ServerResponse,
+} from 'node:http';
+import { connect, type Socket } from 'node:net';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { NetherNetGateway } from './gateway';
 import type { NetherNetGatewayErrorEvent, NetherNetIdentity, NetherNetServerInfo } from './types';
@@ -39,6 +47,48 @@ describe('NetherNetGateway', () => {
     expect(allowed.status).toBe(200);
     expect(upstreamRequests).toBe(1);
     expect(order).toEqual(['before:/v1/join', 'before:/v1/join', 'after:200']);
+  });
+
+  it('reuses a connection after middleware returns before proxying', async () => {
+    const upstream = await serve((_request, response) => {
+      response.end('ok');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    gateway.use((context, next) =>
+      context.url.pathname === '/early' ? new Response(null, { status: 204 }) : next(),
+    );
+    const address = await serve(gateway.handleRequest.bind(gateway));
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+
+    try {
+      const first = await sendHttp(address, '/early', {
+        agent,
+        method: 'POST',
+        body: 'offer',
+      });
+      const second = await sendHttp(address, '/v1/join', { agent });
+
+      expect(first.status).toBe(204);
+      expect(second.status).toBe(200);
+      expect(second.socket).toBe(first.socket);
+    } finally {
+      agent.destroy();
+    }
+  });
+
+  it('survives an aborted request body and rejects unsupported Fetch methods', async () => {
+    const upstream = await serve((_request, response) => {
+      response.end('ok');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    await abortRequest(address);
+    const trace = await sendHttp(address, '/v1/join', { method: 'TRACE' });
+    const healthy = await fetch(`${address}/v1/join`);
+
+    expect(trace.status).toBe(404);
+    expect(healthy.status).toBe(200);
   });
 
   it('lets request middleware replace the request before routing', async () => {
@@ -237,6 +287,11 @@ describe('NetherNetGateway', () => {
         throw new Error('invalid token');
       },
     });
+    let middlewareRequests = 0;
+    gateway.use((_context, next) => {
+      middlewareRequests++;
+      return next();
+    });
     let requestErrors = 0;
     gateway.on('requestError', () => requestErrors++);
     const address = await serve(gateway.handleRequest.bind(gateway));
@@ -254,6 +309,7 @@ describe('NetherNetGateway', () => {
     expect(oversized.status).toBe(413);
     expect(upstreamRequests).toBe(0);
     expect(requestErrors).toBe(0);
+    expect(middlewareRequests).toBe(1);
   });
 
   it('turns middleware and upstream failures into 500 and 502 responses', async () => {
@@ -354,4 +410,38 @@ async function body(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks).toString('utf8');
+}
+
+async function sendHttp(
+  address: string,
+  path: string,
+  options: { agent?: Agent; body?: string; method?: string } = {},
+): Promise<{ socket: Socket; status: number }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(new URL(path, address), {
+      agent: options.agent,
+      method: options.method,
+    });
+    request.once('error', reject);
+    request.once('response', (response) => {
+      const socket = response.socket;
+      response.resume();
+      response.once('end', () => resolve({ socket, status: response.statusCode ?? 0 }));
+    });
+    request.end(options.body);
+  });
+}
+
+async function abortRequest(address: string): Promise<void> {
+  const url = new URL(address);
+  await new Promise<void>((resolve) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      socket.write(
+        'POST /v1/join/1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\npartial',
+      );
+      socket.destroy();
+    });
+    socket.once('error', () => {});
+    socket.once('close', () => resolve());
+  });
 }

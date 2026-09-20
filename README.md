@@ -31,7 +31,19 @@ Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
 ## Middleware
 
-Server information and join attempts have separate middleware stacks. Middleware can return its own response or call `next()` to receive and modify the downstream response. A join middleware can also pass a replacement request to `next()` to change the offer that reaches the upstream server.
+Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Passing a replacement `Request` to `next()` changes the request seen by later middleware and routing. Every middleware context exposes the parsed request URL as `context.url`.
+
+```ts
+gateway.use(async (context, next) => {
+  if (context.url.pathname === '/health') return new Response('OK');
+
+  const response = await next();
+  console.log(context.request.method, response.status);
+  return response;
+});
+```
+
+Server information and join attempts also have separate middleware stacks. A join middleware can pass a replacement request to `next()` to change the offer that reaches the upstream server.
 
 ### Change server information
 
@@ -168,7 +180,7 @@ createServer(gateway.handleRequest.bind(gateway)).listen(8080);
 
 ## Observe request errors
 
-Errors converted into `500` or `502` responses are also emitted for logging and metrics.
+Unexpected request, middleware, upstream, and response failures are emitted for logging and metrics.
 
 ```ts
 gateway.on('requestError', ({ source, error, method, url }) => {

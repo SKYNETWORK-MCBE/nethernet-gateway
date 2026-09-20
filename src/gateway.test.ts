@@ -10,6 +10,59 @@ afterEach(async () => {
 });
 
 describe('NetherNetGateway', () => {
+  it('runs request middleware around every route and allows early responses', async () => {
+    let upstreamRequests = 0;
+    const upstream = await serve((_request, response) => {
+      upstreamRequests++;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(serverInfo));
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const order: string[] = [];
+    gateway.use(async (context, next) => {
+      expect(context.request).toBeInstanceOf(Request);
+      expect(new URL(context.request.url)).toEqual(context.url);
+      order.push(`before:${context.url.pathname}`);
+      if (context.url.searchParams.has('block')) {
+        return new Response('Blocked', { status: 418 });
+      }
+      const response = await next();
+      order.push(`after:${response.status}`);
+      return response;
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const blocked = await fetch(`${address}/v1/join?block`);
+    const allowed = await fetch(`${address}/v1/join`);
+
+    expect(blocked.status).toBe(418);
+    expect(allowed.status).toBe(200);
+    expect(upstreamRequests).toBe(1);
+    expect(order).toEqual(['before:/v1/join', 'before:/v1/join', 'after:200']);
+  });
+
+  it('lets request middleware replace the request before routing', async () => {
+    const upstream = await serve((_request, response) => {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(serverInfo));
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    gateway.use((context, next) =>
+      next(
+        new Request(new URL('/v1/join', context.request.url), {
+          method: 'GET',
+          headers: context.request.headers,
+        }),
+      ),
+    );
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const response = await fetch(`${address}/rewritten`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(serverInfo);
+  });
+
   it('runs info middleware around the upstream response', async () => {
     const order: string[] = [];
     const upstream = await serve((_request, response) => {
@@ -63,6 +116,7 @@ describe('NetherNetGateway', () => {
     let contextIdentity: NetherNetIdentity | undefined;
     gateway.use('join', (context, next) => {
       expect(context.networkId).toBe('network id');
+      expect(context.url.searchParams.get('source')).toBe('test');
       expect(context.offer).toBe('offer');
       contextIdentity = context.identity;
       return next();

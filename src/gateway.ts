@@ -2,14 +2,13 @@ import EventEmitter from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { proxyFetch } from 'httpxy';
 import { verifyClientIdentity } from './identity';
-import { createRequest, readBody, RequestTooLargeError, requestUrl, writeResponse } from './http';
+import { createRequest, readBody, RequestTooLargeError, writeResponse } from './http';
 import type {
-  GatewayContext,
   GatewayMiddleware,
+  GatewayContext,
   JoinContext,
   NetherNetGatewayErrorEvent,
   NetherNetIdentity,
-  Next,
   ServerInfoContext,
   VerifyClientToken,
 } from './types';
@@ -29,6 +28,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
 
   private readonly infoMiddlewares: GatewayMiddleware<ServerInfoContext>[] = [];
   private readonly joinMiddlewares: GatewayMiddleware<JoinContext>[] = [];
+  private readonly requestMiddlewares: GatewayMiddleware[] = [];
   server?: Server;
 
   constructor(options: NetherNetGatewayOptions) {
@@ -41,12 +41,18 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     this.options = { ...options };
   }
 
+  use(middleware: GatewayMiddleware): this;
   use(selector: 'info', middleware: GatewayMiddleware<ServerInfoContext>): this;
   use(selector: 'join', middleware: GatewayMiddleware<JoinContext>): this;
   use(
-    selector: 'info' | 'join',
-    middleware: GatewayMiddleware<ServerInfoContext> | GatewayMiddleware<JoinContext>,
+    selector: 'info' | 'join' | GatewayMiddleware,
+    middleware?: GatewayMiddleware<ServerInfoContext> | GatewayMiddleware<JoinContext>,
   ): this {
+    if (typeof selector === 'function') {
+      this.requestMiddlewares.push(selector);
+      return this;
+    }
+
     if (selector === 'info') {
       this.infoMiddlewares.push(middleware as GatewayMiddleware<ServerInfoContext>);
     } else {
@@ -56,29 +62,39 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     return this;
   }
 
-  async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  async handleRequest(incoming: IncomingMessage, response: ServerResponse): Promise<void> {
+    const method = incoming.method ?? 'UNKNOWN';
+    const url = incoming.url ?? '/';
+    const request = createRequest(incoming);
+    const context: GatewayContext = {
+      request,
+      url: new URL(request.url),
+    };
+
     let result: Response;
     try {
-      result = await this.dispatch(request);
+      result = await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
+        try {
+          return await this.dispatch(requestContext);
+        } catch (error) {
+          this.emitRequestError('request', error, method, url);
+          return new Response('Internal Server Error', { status: 500 });
+        }
+      });
     } catch (error) {
-      this.emitRequestError('request', error, request.method ?? 'UNKNOWN', request.url ?? '/');
+      this.emitRequestError('middleware', error, method, url);
       result = new Response('Internal Server Error', { status: 500 });
     }
 
     try {
       await writeResponse(response, result);
     } catch (error) {
-      this.emitRequestError('response', error, request.method ?? 'UNKNOWN', request.url ?? '/');
+      this.emitRequestError('response', error, method, url);
       if (!response.headersSent) {
         try {
           await writeResponse(response, new Response('Internal Server Error', { status: 500 }));
         } catch (fallbackError) {
-          this.emitRequestError(
-            'response',
-            fallbackError,
-            request.method ?? 'UNKNOWN',
-            request.url ?? '/',
-          );
+          this.emitRequestError('response', fallbackError, method, url);
           response.destroy();
         }
       } else {
@@ -119,15 +135,14 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     });
   }
 
-  private async dispatch(incoming: IncomingMessage): Promise<Response> {
-    const url = requestUrl(incoming);
+  private async dispatch(requestContext: GatewayContext): Promise<Response> {
+    const { request, url } = requestContext;
 
-    if (incoming.method === 'GET' && url.pathname === '/v1/join') {
-      const request = createRequest(incoming, url);
-      return this.middleware(this.infoMiddlewares, { request });
+    if (request.method === 'GET' && url.pathname === '/v1/join') {
+      return this.middleware(this.infoMiddlewares, requestContext);
     }
 
-    const match = incoming.method === 'POST' && /^\/v1\/join\/([^/]+)$/.exec(url.pathname);
+    const match = request.method === 'POST' && /^\/v1\/join\/([^/]+)$/.exec(url.pathname);
     if (!match) return new Response('Not Found', { status: 404 });
 
     let networkId: string;
@@ -139,7 +154,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
 
     let offer: string;
     try {
-      offer = await readBody(incoming);
+      offer = await readBody(request.clone());
     } catch (error) {
       if (error instanceof RequestTooLargeError) {
         return new Response('SDP offer is too large', { status: 413 });
@@ -147,11 +162,10 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       throw error;
     }
 
-    const request = createRequest(incoming, url, offer);
     const identity = await this.identity(offer);
     if (identity instanceof Response) return identity;
 
-    const context: JoinContext = { request, networkId, offer, identity };
+    const context: JoinContext = { ...requestContext, networkId, offer, identity };
     return this.middleware(this.joinMiddlewares, context);
   }
 
@@ -191,14 +205,12 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     }
   }
 
-  private async middleware<Context extends GatewayContext>(
-    middleware: readonly GatewayMiddleware<Context>[],
-    context: Context,
+  private async middleware<CTX extends GatewayContext>(
+    middleware: readonly GatewayMiddleware<CTX>[],
+    context: CTX,
   ): Promise<Response> {
     try {
-      return await runMiddleware(middleware, context, (request) =>
-        this.proxy((request ?? context.request).clone()),
-      );
+      return await runMiddleware(middleware, context, ({ request }) => this.proxy(request.clone()));
     } catch (error) {
       this.emitRequestError('middleware', error, context.request.method, context.request.url);
       return new Response('Internal Server Error', { status: 500 });
@@ -215,14 +227,14 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   }
 }
 
-async function runMiddleware<Context extends GatewayContext>(
-  middleware: readonly GatewayMiddleware<Context>[],
-  context: Context,
-  terminal: Next,
+async function runMiddleware<CTX extends GatewayContext>(
+  middleware: readonly GatewayMiddleware<CTX>[],
+  context: CTX,
+  terminal: (context: CTX) => Promise<Response>,
 ): Promise<Response> {
   let lastIndex = -1;
 
-  const dispatch = async (index: number, context: Context): Promise<Response> => {
+  const dispatch = async (index: number, context: CTX): Promise<Response> => {
     if (index <= lastIndex) throw new Error('next() called multiple times');
     lastIndex = index;
 
@@ -231,7 +243,7 @@ async function runMiddleware<Context extends GatewayContext>(
       ? await current(context, async (override) =>
           dispatch(index + 1, override ? await replaceRequest(context, override) : context),
         )
-      : await terminal(context.request);
+      : await terminal(context);
 
     if (!(response instanceof Response)) {
       throw new TypeError('Gateway middleware must return a Response');
@@ -242,10 +254,10 @@ async function runMiddleware<Context extends GatewayContext>(
   return dispatch(0, context);
 }
 
-async function replaceRequest<Context extends GatewayContext>(
-  context: Context,
+async function replaceRequest<CTX extends GatewayContext>(
+  context: CTX,
   request: Request,
-): Promise<Context> {
-  const replaced = { ...context, request };
+): Promise<CTX> {
+  const replaced = { ...context, request, url: new URL(request.url) };
   return 'offer' in context ? { ...replaced, offer: await request.clone().text() } : replaced;
 }

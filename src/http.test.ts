@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
-import { createRequest, readBody, RequestTooLargeError, requestUrl, writeResponse } from './http';
+import { createRequest, readBody, RequestTooLargeError, writeResponse } from './http';
 
 const servers: Server[] = [];
 
@@ -12,9 +11,7 @@ afterEach(async () => {
 describe('HTTP adapters', () => {
   it('converts incoming requests and writes Fetch responses', async () => {
     const address = await serve(async (incoming, response) => {
-      const url = requestUrl(incoming);
-      const body = await readBody(incoming);
-      const request = createRequest(incoming, url, body);
+      const request = createRequest(incoming);
       await writeResponse(
         response,
         Response.json(
@@ -22,7 +19,7 @@ describe('HTTP adapters', () => {
             method: request.method,
             url: new URL(request.url).pathname + new URL(request.url).search,
             header: request.headers.get('x-test'),
-            body: await request.text(),
+            body: await readBody(request),
           },
           { status: 201, headers: { 'x-response': 'copied' } },
         ),
@@ -65,19 +62,19 @@ describe('HTTP adapters', () => {
   });
 
   it('enforces the body limit from both the declared and streamed byte counts', async () => {
-    const declared = incomingStream([], { 'content-length': String(1024 * 1024 + 1) });
+    const declared = new Request('http://localhost', {
+      method: 'POST',
+      headers: { 'content-length': String(1024 * 1024 + 1) },
+    });
     await expect(readBody(declared)).rejects.toBeInstanceOf(RequestTooLargeError);
 
-    const streamed = incomingStream([Buffer.alloc(1024 * 1024 + 1)]);
+    const streamed = new Request('http://localhost', {
+      method: 'POST',
+      body: Buffer.alloc(1024 * 1024 + 1),
+    });
     await expect(readBody(streamed)).rejects.toBeInstanceOf(RequestTooLargeError);
   });
 });
-
-function incomingStream(chunks: Buffer[], headers: Record<string, string> = {}): IncomingMessage {
-  const request = Readable.from(chunks) as unknown as IncomingMessage;
-  request.headers = headers;
-  return request;
-}
 
 async function serve(
   handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,

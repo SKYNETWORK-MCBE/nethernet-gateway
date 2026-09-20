@@ -175,11 +175,16 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   }
 
   private async proxy(request: Request): Promise<Response> {
-    // Middleware may have replaced the body, so let the transport recompute the length.
-    request.headers.delete('content-length');
-
     try {
-      return await proxyFetch(this.options.upstream, request);
+      if (!request.body) return await proxyFetch(this.options.upstream, request);
+
+      // BDS requires a content length and does not read httpxy's chunked request body.
+      const body = Buffer.from(await request.arrayBuffer());
+      const headers = new Headers(request.headers);
+      headers.delete('transfer-encoding');
+      headers.set('content-length', String(body.byteLength));
+
+      return await proxyFetch(this.options.upstream, request, { body, headers });
     } catch (error) {
       this.emitRequestError('upstream', error, request.method, request.url);
       return new Response('Bad Gateway', { status: 502 });

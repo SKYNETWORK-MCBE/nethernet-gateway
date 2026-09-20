@@ -31,7 +31,7 @@ Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
 ## Middleware
 
-Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Every middleware receives its own request clone and parsed URL, so reading the body or changing `context.url` does not affect later middleware. Pass a replacement `Request` to `next()` to change the downstream request and routing.
+Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Every middleware receives its own request clone and parsed URL, so reading the body or changing `context.url` does not affect later middleware. Changes to `context.request.headers` are carried forward when `next()` is called. Pass a replacement `Request` to `next()` to change the downstream method, URL, or body and routing.
 
 ```ts
 gateway.use(async (context, next) => {

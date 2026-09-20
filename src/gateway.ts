@@ -310,7 +310,11 @@ async function runMiddleware<CTX extends GatewayContext>(
       url: new URL(context.request.url),
     };
     const response = await current(localContext, async (override) => {
-      if (!override) return dispatch(index + 1, context);
+      if (!override) {
+        // Headers are Request's only mutable state, so carry them forward without sharing its body.
+        replaceHeaders(context.request.headers, localContext.request.headers);
+        return dispatch(index + 1, context);
+      }
       const replaced = await replace(context, override);
       return replaced instanceof Response ? replaced : dispatch(index + 1, replaced);
     });
@@ -322,6 +326,11 @@ async function runMiddleware<CTX extends GatewayContext>(
   };
 
   return dispatch(0, context);
+}
+
+function replaceHeaders(target: Headers, source: Headers): void {
+  for (const name of Array.from(target.keys())) target.delete(name);
+  for (const [name, value] of source) target.set(name, value);
 }
 
 async function replaceRequest<CTX extends GatewayContext>(

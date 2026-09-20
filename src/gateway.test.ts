@@ -161,6 +161,38 @@ describe('NetherNetGateway', () => {
     expect(received).toBe('offer');
   });
 
+  it('carries mutable request headers through global and join middleware', async () => {
+    let received: IncomingMessage['headers'] = {};
+    const upstream = await serve((request, response) => {
+      received = request.headers;
+      response.end('answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    gateway.use((context, next) => {
+      context.request.headers.set('x-global', 'global');
+      context.request.headers.delete('x-remove');
+      return next();
+    });
+    gateway.use('join', (context, next) => {
+      expect(context.request.headers.get('x-global')).toBe('global');
+      expect(context.request.headers.has('x-remove')).toBe(false);
+      context.request.headers.set('x-join', 'join');
+      return next();
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const response = await fetch(`${address}/v1/join/1`, {
+      method: 'POST',
+      headers: { 'x-remove': 'remove' },
+      body: 'offer',
+    });
+
+    expect(response.status).toBe(200);
+    expect(received?.['x-global']).toBe('global');
+    expect(received?.['x-join']).toBe('join');
+    expect(received?.['x-remove']).toBeUndefined();
+  });
+
   it('runs info middleware around the upstream response', async () => {
     const order: string[] = [];
     const upstream = await serve((_request, response) => {

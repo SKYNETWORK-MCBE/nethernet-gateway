@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
-import { createRequest, readBody, RequestTooLargeError, writeResponse } from './http';
+import { RequestTooLargeError } from './errors';
+import { createRequest, readBody, writeResponse } from './http';
 
 const servers: Server[] = [];
 

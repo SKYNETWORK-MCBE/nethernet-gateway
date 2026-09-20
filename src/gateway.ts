@@ -1,14 +1,9 @@
 import EventEmitter from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { proxyFetch } from 'httpxy';
+import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 import { verifyClientIdentity } from './identity';
-import {
-  createRequest,
-  InvalidRequestBodyError,
-  readBody,
-  RequestTooLargeError,
-  writeResponse,
-} from './http';
+import { createRequest, readBody, writeResponse } from './http';
 import type {
   GatewayMiddleware,
   GatewayContext,

@@ -1,9 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 
 const MAX_OFFER_BYTES = 1024 * 1024;
-
-export class RequestTooLargeError extends Error {}
-export class InvalidRequestBodyError extends Error {}
 
 function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);

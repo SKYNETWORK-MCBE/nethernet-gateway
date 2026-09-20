@@ -192,6 +192,24 @@ gateway.on('requestError', ({ source, error, method, url }) => {
 
 Authentication failures and other expected `4xx` responses are not emitted.
 
+## Log requests
+
+Register `logger()` once to log every request.
+
+```ts
+import { logger } from 'nethernet-gateway';
+
+gateway.use(logger());
+// --> POST /v1/join/9876543210123456789
+// <-- POST /v1/join/9876543210123456789 200 12ms
+```
+
+Response status codes are colored by category. Set `NO_COLOR` to disable ANSI colors. Pass a print function to send the lines to another logger:
+
+```ts
+gateway.use(logger((line) => appLogger.info(line)));
+```
+
 ## Security
 
 - Put the public signaling endpoint behind HTTPS. TLS termination is outside this package.

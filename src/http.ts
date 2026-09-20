@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 const MAX_OFFER_BYTES = 1024 * 1024;
 
 export class RequestTooLargeError extends Error {}
+export class InvalidRequestBodyError extends Error {}
 
 function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -40,7 +41,11 @@ export async function readBody(request: Request): Promise<string> {
 
   const body = Buffer.from(await request.arrayBuffer());
   if (body.byteLength > MAX_OFFER_BYTES) throw new RequestTooLargeError();
-  return body.toString('utf8');
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(body);
+  } catch {
+    throw new InvalidRequestBodyError();
+  }
 }
 
 async function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {

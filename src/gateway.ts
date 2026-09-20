@@ -2,7 +2,13 @@ import EventEmitter from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { proxyFetch } from 'httpxy';
 import { verifyClientIdentity } from './identity';
-import { createRequest, readBody, RequestTooLargeError, writeResponse } from './http';
+import {
+  createRequest,
+  InvalidRequestBodyError,
+  readBody,
+  RequestTooLargeError,
+  writeResponse,
+} from './http';
 import type {
   GatewayMiddleware,
   GatewayContext,
@@ -53,10 +59,16 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       return this;
     }
 
+    if (typeof middleware !== 'function') {
+      throw new TypeError(`A middleware function is required for ${selector}`);
+    }
+
     if (selector === 'info') {
       this.infoMiddlewares.push(middleware as GatewayMiddleware<ServerInfoContext>);
-    } else {
+    } else if (selector === 'join') {
       this.joinMiddlewares.push(middleware as GatewayMiddleware<JoinContext>);
+    } else {
+      throw new TypeError(`Unknown middleware selector: ${String(selector)}`);
     }
 
     return this;
@@ -148,12 +160,24 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   }
 
   private async dispatch(requestContext: GatewayContext): Promise<Response> {
-    const { request, url } = requestContext;
+    const { request } = requestContext;
+    const url = new URL(request.url);
+    const context = { request, url };
 
     if (request.method === 'GET' && url.pathname === '/v1/join') {
-      return this.middleware(this.infoMiddlewares, requestContext);
+      return this.middleware(this.infoMiddlewares, context);
     }
 
+    const joinContext = await this.createJoinContext(request);
+    if (joinContext instanceof Response) return joinContext;
+    return this.middleware(this.joinMiddlewares, joinContext, async (_context, replacement) => {
+      // A replacement can change every field derived from the request, including verified identity.
+      return this.createJoinContext(replacement);
+    });
+  }
+
+  private async createJoinContext(request: Request): Promise<JoinContext | Response> {
+    const url = new URL(request.url);
     const match = request.method === 'POST' && /^\/v1\/join\/([^/]+)$/.exec(url.pathname);
     if (!match) return new Response('Not Found', { status: 404 });
 
@@ -171,14 +195,16 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       if (error instanceof RequestTooLargeError) {
         return new Response('SDP offer is too large', { status: 413 });
       }
+      if (error instanceof InvalidRequestBodyError) {
+        return new Response('SDP offer must be valid UTF-8', { status: 400 });
+      }
       throw error;
     }
 
     const identity = await this.identity(offer);
     if (identity instanceof Response) return identity;
 
-    const context: JoinContext = { ...requestContext, networkId, offer, identity };
-    return this.middleware(this.joinMiddlewares, context);
+    return { request, url, networkId, offer, identity };
   }
 
   private async identity(offer: string): Promise<NetherNetIdentity | undefined | Response> {
@@ -220,9 +246,15 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   private async middleware<CTX extends GatewayContext>(
     middleware: readonly GatewayMiddleware<CTX>[],
     context: CTX,
+    replace?: ReplaceContext<CTX>,
   ): Promise<Response> {
     try {
-      return await runMiddleware(middleware, context, ({ request }) => this.proxy(request.clone()));
+      return await runMiddleware(
+        middleware,
+        context,
+        ({ request }) => this.proxy(request.clone()),
+        replace,
+      );
     } catch (error) {
       this.emitRequestError('middleware', error, context.request.method, context.request.url);
       return new Response('Internal Server Error', { status: 500 });
@@ -239,10 +271,16 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   }
 }
 
+type ReplaceContext<CTX extends GatewayContext> = (
+  context: CTX,
+  request: Request,
+) => Promise<CTX | Response>;
+
 async function runMiddleware<CTX extends GatewayContext>(
   middleware: readonly GatewayMiddleware<CTX>[],
   context: CTX,
   terminal: (context: CTX) => Promise<Response>,
+  replace: ReplaceContext<CTX> = replaceRequest,
 ): Promise<Response> {
   let lastIndex = -1;
 
@@ -251,11 +289,18 @@ async function runMiddleware<CTX extends GatewayContext>(
     lastIndex = index;
 
     const current = middleware[index];
-    const response = current
-      ? await current(context, async (override) =>
-          dispatch(index + 1, override ? await replaceRequest(context, override) : context),
-        )
-      : await terminal(context);
+    if (!current) return terminal(context);
+
+    const localContext = {
+      ...context,
+      request: context.request.clone(),
+      url: new URL(context.request.url),
+    };
+    const response = await current(localContext, async (override) => {
+      if (!override) return dispatch(index + 1, context);
+      const replaced = await replace(context, override);
+      return replaced instanceof Response ? replaced : dispatch(index + 1, replaced);
+    });
 
     if (!(response instanceof Response)) {
       throw new TypeError('Gateway middleware must return a Response');
@@ -270,6 +315,5 @@ async function replaceRequest<CTX extends GatewayContext>(
   context: CTX,
   request: Request,
 ): Promise<CTX> {
-  const replaced = { ...context, request, url: new URL(request.url) };
-  return 'offer' in context ? { ...replaced, offer: await request.clone().text() } : replaced;
+  return { ...context, request, url: new URL(request.url) };
 }

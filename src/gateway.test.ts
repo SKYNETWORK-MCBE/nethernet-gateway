@@ -7,6 +7,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { connect, type Socket } from 'node:net';
+import { exportJWK, FlattenedSign, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { NetherNetGateway } from './gateway';
 import type { NetherNetGatewayErrorEvent, NetherNetIdentity, NetherNetServerInfo } from './types';
@@ -111,6 +112,32 @@ describe('NetherNetGateway', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(serverInfo);
+  });
+
+  it('isolates request bodies and URLs between middleware', async () => {
+    let received: string | undefined;
+    const upstream = await serve(async (request, response) => {
+      received = await body(request);
+      response.end('answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const seen: string[] = [];
+    gateway.use(async (context, next) => {
+      seen.push(await context.request.text());
+      context.url.pathname = '/other';
+      return next();
+    });
+    gateway.use(async (context, next) => {
+      seen.push(await context.request.text());
+      return next();
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: 'offer' });
+
+    expect(response.status).toBe(200);
+    expect(seen).toEqual(['offer', 'offer']);
+    expect(received).toBe('offer');
   });
 
   it('runs info middleware around the upstream response', async () => {
@@ -239,6 +266,87 @@ describe('NetherNetGateway', () => {
     expect(received).toBe('rewritten offer');
   });
 
+  it('rebuilds join metadata and identity after replacing a request', async () => {
+    const signed = await createSignedOffer('verified-token', 'verified-xuid');
+    const upstream = await serve((_request, response) => {
+      response.end('answer');
+    });
+    let verifications = 0;
+    const gateway = new NetherNetGateway({
+      upstream,
+      verifyClientToken: (token) => {
+        expect(token).toBe('verified-token');
+        verifications++;
+        return signed.identity;
+      },
+    });
+    const seen: Array<{ identity?: string; networkId: string; offer: string }> = [];
+    gateway.use('join', (context, next) => {
+      seen.push({
+        identity: context.identity?.xuid,
+        networkId: context.networkId,
+        offer: context.offer,
+      });
+      return next(
+        new Request(new URL('/v1/join/replaced', context.request.url), {
+          method: 'POST',
+          body: signed.offer,
+        }),
+      );
+    });
+    gateway.use('join', (context, next) => {
+      seen.push({
+        identity: context.identity?.xuid,
+        networkId: context.networkId,
+        offer: context.offer,
+      });
+      return next();
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const response = await fetch(`${address}/v1/join/original`, {
+      method: 'POST',
+      body: signed.offer,
+    });
+
+    expect(response.status).toBe(200);
+    expect(verifications).toBe(2);
+    expect(seen).toEqual([
+      { identity: 'verified-xuid', networkId: 'original', offer: signed.offer },
+      { identity: 'verified-xuid', networkId: 'replaced', offer: signed.offer },
+    ]);
+  });
+
+  it('validates replacement offer size and UTF-8 encoding', async () => {
+    const upstream = await serve((_request, response) => {
+      response.end('answer');
+    });
+    const oversized = new NetherNetGateway({ upstream });
+    oversized.use('join', (context, next) =>
+      next(
+        new Request(context.request, {
+          method: 'POST',
+          body: Buffer.alloc(1024 * 1024 + 1),
+        }),
+      ),
+    );
+    const oversizedAddress = await serve(oversized.handleRequest.bind(oversized));
+    const invalidUtf8 = new NetherNetGateway({ upstream });
+    const invalidUtf8Address = await serve(invalidUtf8.handleRequest.bind(invalidUtf8));
+
+    const oversizedResponse = await fetch(`${oversizedAddress}/v1/join/1`, {
+      method: 'POST',
+      body: 'offer',
+    });
+    const invalidUtf8Response = await fetch(`${invalidUtf8Address}/v1/join/1`, {
+      method: 'POST',
+      body: new Uint8Array([0xc3, 0x28]),
+    });
+
+    expect(oversizedResponse.status).toBe(413);
+    expect(invalidUtf8Response.status).toBe(400);
+  });
+
   it('supports optional and required client identity modes', async () => {
     const upstream = await serve((_request, response) => {
       response.end('answer');
@@ -356,6 +464,14 @@ describe('NetherNetGateway', () => {
     await standalone.listen(0, '127.0.0.1');
     await standalone.close();
   });
+
+  it('rejects incomplete and unknown middleware registrations', () => {
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    const use = gateway.use.bind(gateway) as (...arguments_: unknown[]) => NetherNetGateway;
+
+    expect(() => use('info')).toThrow(/middleware function/u);
+    expect(() => use('unknown', () => new Response())).toThrow(/Unknown middleware selector/u);
+  });
 });
 
 const serverInfo: NetherNetServerInfo = {
@@ -383,6 +499,38 @@ function offerWithIdentityAssertion(token: string): string {
     'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
     '',
   ].join('\r\n');
+}
+
+async function createSignedOffer(
+  token: string,
+  xuid: string,
+): Promise<{ identity: NetherNetIdentity; offer: string }> {
+  const fingerprint = { algorithm: 'sha-256', digest: 'AA:BB:CC' };
+  const { privateKey, publicKey } = await generateKeyPair('ES384', { extractable: true });
+  const signed = await new FlattenedSign(
+    new TextEncoder().encode(JSON.stringify({ fingerprint: [fingerprint] })),
+  )
+    .setProtectedHeader({ alg: 'ES384' })
+    .sign(privateKey);
+  const cpk = await exportJWK(publicKey);
+  const envelope = {
+    idp: { domain: 'auth.example', protocol: 'default' },
+    assertion: JSON.stringify({
+      token,
+      fingerprints: `${signed.protected}..${signed.signature}`,
+    }),
+  };
+
+  return {
+    identity: { xuid, cpk, claims: { cpk, xid: xuid } },
+    offer: [
+      'v=0',
+      `a=fingerprint:${fingerprint.algorithm} ${fingerprint.digest}`,
+      `a=identity:${Buffer.from(JSON.stringify(envelope)).toString('base64')}`,
+      'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
+      '',
+    ].join('\r\n'),
+  };
 }
 
 async function serve(

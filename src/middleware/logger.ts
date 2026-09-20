@@ -1,4 +1,4 @@
-import type { GatewayRequestMiddleware } from '../types';
+import type { GatewayMiddleware } from '../types';
 
 export type LoggerPrint = (line: string) => void;
 
@@ -9,7 +9,7 @@ function colorStatus(status: number): string {
   return `\x1b[${color}m${status}\x1b[0m`;
 }
 
-export function logger(print: LoggerPrint = console.log): GatewayRequestMiddleware {
+export function logger(print: LoggerPrint = console.log): GatewayMiddleware {
   return async (context, next) => {
     const { method } = context.request;
     const path = context.url.pathname;

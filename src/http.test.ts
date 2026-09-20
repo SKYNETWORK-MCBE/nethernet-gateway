@@ -1,13 +1,11 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { RequestTooLargeError } from './errors';
 import { createRequest, readBody, writeResponse } from './http';
+import { createTestServers } from './test-server';
 
-const servers: Server[] = [];
+const { serve, closeAll } = createTestServers();
 
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map(closeServer));
-});
+afterEach(closeAll);
 
 describe('HTTP adapters', () => {
   it('converts incoming requests and writes Fetch responses', async () => {
@@ -92,24 +90,3 @@ describe('HTTP adapters', () => {
     expect(pulls).toBeLessThan(64);
   });
 });
-
-async function serve(
-  handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
-): Promise<string> {
-  const server = createServer(handler);
-  servers.push(server);
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Missing test server address');
-  return `http://127.0.0.1:${address.port}`;
-}
-
-async function closeServer(server: Server): Promise<void> {
-  if (!server.listening) return;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-}

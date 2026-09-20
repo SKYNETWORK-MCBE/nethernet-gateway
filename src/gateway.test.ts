@@ -1,22 +1,14 @@
-import {
-  Agent,
-  createServer,
-  type IncomingMessage,
-  request as httpRequest,
-  type Server,
-  type ServerResponse,
-} from 'node:http';
+import { Agent, type IncomingMessage, request as httpRequest } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { exportJWK, FlattenedSign, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { NetherNetGateway } from './gateway';
+import { createTestServers } from './test-server';
 import type { NetherNetGatewayErrorEvent, NetherNetIdentity, NetherNetServerInfo } from './types';
 
-const servers: Server[] = [];
+const { servers, serve, closeServer, closeAll } = createTestServers();
 
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map(closeServer));
-});
+afterEach(closeAll);
 
 describe('NetherNetGateway', () => {
   it('runs request middleware around every route and allows early responses', async () => {
@@ -584,27 +576,6 @@ async function createSignedOffer(
       '',
     ].join('\r\n'),
   };
-}
-
-async function serve(
-  handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
-): Promise<string> {
-  const server = createServer(handler);
-  servers.push(server);
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Missing test server address');
-  return `http://127.0.0.1:${address.port}`;
-}
-
-async function closeServer(server: Server): Promise<void> {
-  if (!server.listening) return;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
 }
 
 async function body(request: IncomingMessage): Promise<string> {

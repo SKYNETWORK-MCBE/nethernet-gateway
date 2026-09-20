@@ -39,10 +39,20 @@ export async function readBody(request: Request): Promise<string> {
     throw new RequestTooLargeError();
   }
 
-  const body = Buffer.from(await request.arrayBuffer());
-  if (body.byteLength > MAX_OFFER_BYTES) throw new RequestTooLargeError();
+  const chunks: Buffer[] = [];
+  let length = 0;
+  if (!request.body) return '';
+
+  for await (const value of request.body) {
+    const chunk = Buffer.from(value);
+    length += chunk.byteLength;
+    // for-await waits for automatic stream cancellation before preserving this size error.
+    if (length > MAX_OFFER_BYTES) throw new RequestTooLargeError();
+    chunks.push(chunk);
+  }
+
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(body);
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, length));
   } catch {
     throw new InvalidRequestBodyError();
   }
@@ -51,25 +61,18 @@ export async function readBody(request: Request): Promise<string> {
 async function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {
   const declaredLength = Number(incoming.headers['content-length']);
   if (Number.isFinite(declaredLength) && declaredLength > MAX_OFFER_BYTES) {
-    incoming.resume();
     throw new RequestTooLargeError();
   }
 
   const chunks: Buffer[] = [];
   let length = 0;
-  let tooLarge = false;
-  for await (const chunk of incoming) {
+  for await (const chunk of incoming.iterator({ destroyOnReturn: false })) {
     const buffer = Buffer.from(chunk);
     length += buffer.byteLength;
-    if (length > MAX_OFFER_BYTES) {
-      tooLarge = true;
-      chunks.length = 0;
-    } else if (!tooLarge) {
-      chunks.push(buffer);
-    }
+    if (length > MAX_OFFER_BYTES) throw new RequestTooLargeError();
+    chunks.push(buffer);
   }
 
-  if (tooLarge) throw new RequestTooLargeError();
   return Buffer.concat(chunks, length);
 }
 

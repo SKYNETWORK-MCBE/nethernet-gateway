@@ -92,6 +92,27 @@ describe('NetherNetGateway', () => {
     expect(healthy.status).toBe(200);
   });
 
+  it('rejects an unterminated oversized chunked body without blocking server close', async () => {
+    const upstream = await serve((_request, response) => {
+      response.end('ok');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+    const server = servers.at(-1);
+    if (!server) throw new Error('Missing gateway test server');
+    const client = await sendOversizedChunked(address);
+    const closing = closeServer(server);
+
+    const result = await Promise.race([
+      Promise.all([client.response, closing]).then(([response]) => response),
+      delay(1000).then(() => undefined),
+    ]);
+    client.socket.destroy();
+    if (result === undefined) await closing;
+
+    expect(result).toContain(' 413 ');
+  });
+
   it('lets request middleware replace the request before routing', async () => {
     const upstream = await serve((_request, response) => {
       response.setHeader('content-type', 'application/json');
@@ -592,4 +613,47 @@ async function abortRequest(address: string): Promise<void> {
     socket.once('error', () => {});
     socket.once('close', () => resolve());
   });
+}
+
+async function sendOversizedChunked(
+  address: string,
+): Promise<{ response: Promise<string>; socket: Socket }> {
+  const url = new URL(address);
+  let received = '';
+  let resolveResponse!: (response: string) => void;
+  let rejectResponse!: (error: Error) => void;
+  const response = new Promise<string>((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+  const socket = connect(Number(url.port), url.hostname);
+  socket.setEncoding('utf8');
+  socket.on('data', (chunk) => {
+    received += chunk;
+  });
+  socket.once('close', () => resolveResponse(received));
+  socket.once('error', rejectResponse);
+
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('error', reject);
+  });
+  socket.write('POST /v1/join/1 HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n');
+  const chunk = 'x'.repeat(64 * 1024);
+  for (let index = 0; index < 17; index++) {
+    await writeSocket(socket, `${chunk.length.toString(16)}\r\n${chunk}\r\n`);
+    await delay(0);
+  }
+
+  return { response, socket };
+}
+
+async function writeSocket(socket: Socket, data: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    socket.write(data, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

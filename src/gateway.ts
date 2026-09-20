@@ -102,6 +102,12 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
         }
       } catch (error) {
         if (error instanceof RequestTooLargeError) {
+          if (incoming.headers['content-length'] === undefined) {
+            // Close after the 413 so an unterminated chunked body cannot keep server.close() waiting.
+            response.shouldKeepAlive = false;
+          } else {
+            incoming.resume();
+          }
           result = new Response('Request body is too large', { status: 413 });
         } else {
           this.emitRequestError('request', error, method, url);
@@ -176,7 +182,8 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     });
   }
 
-  private async createJoinContext(request: Request): Promise<JoinContext | Response> {
+  private async createJoinContext(originalRequest: Request): Promise<JoinContext | Response> {
+    let request = originalRequest;
     const url = new URL(request.url);
     const match = request.method === 'POST' && /^\/v1\/join\/([^/]+)$/.exec(url.pathname);
     if (!match) return new Response('Not Found', { status: 404 });
@@ -190,7 +197,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
 
     let offer: string;
     try {
-      offer = await readBody(request.clone());
+      offer = await readBody(request);
     } catch (error) {
       if (error instanceof RequestTooLargeError) {
         return new Response('SDP offer is too large', { status: 413 });
@@ -200,6 +207,17 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       }
       throw error;
     }
+
+    const body = new TextEncoder().encode(offer);
+    const headers = new Headers(request.headers);
+    headers.delete('transfer-encoding');
+    headers.set('content-length', String(body.byteLength));
+    request = new Request(request.url, {
+      method: request.method,
+      headers,
+      body,
+      signal: request.signal,
+    });
 
     const identity = await this.identity(offer);
     if (identity instanceof Response) return identity;

@@ -68,11 +68,27 @@ describe('HTTP adapters', () => {
     });
     await expect(readBody(declared)).rejects.toBeInstanceOf(RequestTooLargeError);
 
+    let cancelled = false;
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+        throw new Error('cancel failed');
+      },
+      pull(controller) {
+        if (pulls === 64) return controller.close();
+        pulls++;
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+    });
     const streamed = new Request('http://localhost', {
       method: 'POST',
-      body: Buffer.alloc(1024 * 1024 + 1),
-    });
+      body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
     await expect(readBody(streamed)).rejects.toBeInstanceOf(RequestTooLargeError);
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(64);
   });
 });
 

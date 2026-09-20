@@ -31,7 +31,7 @@ Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
 ## Middleware
 
-Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Passing a replacement `Request` to `next()` changes the request seen by later middleware and routing. Every middleware context exposes the parsed request URL as `context.url`.
+Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Every middleware receives its own request clone and parsed URL, so reading the body or changing `context.url` does not affect later middleware. Pass a replacement `Request` to `next()` to change the downstream request and routing.
 
 ```ts
 gateway.use(async (context, next) => {
@@ -43,7 +43,7 @@ gateway.use(async (context, next) => {
 });
 ```
 
-Server information and join attempts also have separate middleware stacks. A join middleware can pass a replacement request to `next()` to change the offer that reaches the upstream server.
+Server information and join attempts also have separate middleware stacks. A join middleware can pass a replacement request to `next()` to change the offer that reaches the upstream server. The gateway then parses the Network ID and offer again and repeats identity verification before running later join middleware.
 
 ### Change server information
 
@@ -195,7 +195,7 @@ Authentication failures and other expected `4xx` responses are not emitted.
 - Put the public signaling endpoint behind HTTPS. TLS termination is outside this package.
 - A decoded JWT is not an authenticated identity. Verify its signature and expected claims in `verifyClientToken`.
 - Invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
-- SDP offers larger than 1 MiB are rejected with `413`.
+- Request bodies larger than 1 MiB are rejected with `413` before middleware runs. SDP offers must also be valid UTF-8.
 - To hide the global IP address of the backend, override ICE candidate. (See the "Rewrite ICE candidates" section.)
 
 ## Acknowledgements

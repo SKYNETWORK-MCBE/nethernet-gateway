@@ -40,14 +40,20 @@ export async function readBody(request: Request): Promise<string> {
   const reader = request.body?.getReader();
   if (!reader) return '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const buffer = Buffer.from(value);
-    length += buffer.length;
-    if (length > MAX_OFFER_BYTES) throw new RequestTooLargeError();
-    chunks.push(buffer);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const buffer = Buffer.from(value);
+      length += buffer.length;
+      if (length > MAX_OFFER_BYTES) throw new RequestTooLargeError();
+      chunks.push(buffer);
+    }
+  } catch (error) {
+    void reader.cancel();
+    throw error;
   }
+
   return Buffer.concat(chunks).toString('utf8');
 }
 

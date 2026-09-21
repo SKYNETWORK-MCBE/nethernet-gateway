@@ -1,4 +1,9 @@
-import { Agent, type IncomingMessage, request as httpRequest } from 'node:http';
+import {
+  Agent,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  request as httpRequest,
+} from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { exportJWK, FlattenedSign, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
@@ -157,14 +162,18 @@ describe('NetherNetGateway', () => {
 
   it('carries mutable request headers through global and join middleware', async () => {
     let received: IncomingMessage['headers'] = {};
+    let cookies: string[] | undefined;
     const upstream = await serve((request, response) => {
       received = request.headers;
+      cookies = request.headersDistinct['set-cookie'];
       response.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
     gateway.use((context, next) => {
       context.request.headers.set('x-global', 'global');
       context.request.headers.delete('x-remove');
+      context.request.headers.set('content-length', String(4 * 1024 * 1024));
+      context.request.headers.set('transfer-encoding', 'chunked');
       return next();
     });
     gateway.use('join', (context, next) => {
@@ -175,9 +184,9 @@ describe('NetherNetGateway', () => {
     });
     const address = await serve(gateway.handleRequest.bind(gateway));
 
-    const response = await fetch(`${address}/v1/join/1`, {
+    const response = await sendHttp(address, '/v1/join/1', {
       method: 'POST',
-      headers: { 'x-remove': 'remove' },
+      headers: { 'set-cookie': ['s=1', 't=2'], 'x-remove': 'remove' },
       body: 'offer',
     });
 
@@ -185,6 +194,9 @@ describe('NetherNetGateway', () => {
     expect(received?.['x-global']).toBe('global');
     expect(received?.['x-join']).toBe('join');
     expect(received?.['x-remove']).toBeUndefined();
+    expect(received?.['content-length']).toBe('5');
+    expect(received?.['transfer-encoding']).toBeUndefined();
+    expect(cookies).toEqual(['s=1', 't=2']);
   });
 
   it('runs info middleware around the upstream response', async () => {
@@ -277,6 +289,7 @@ describe('NetherNetGateway', () => {
         body: `rewritten ${context.offer}`,
       });
       const response = await next(replaced);
+      expect(await replaced.text()).toBe('rewritten offer');
 
       return new Response((await response.text()).slice(0, 6), response);
     });
@@ -311,6 +324,22 @@ describe('NetherNetGateway', () => {
 
     expect(seen).toEqual([{ offer: 'rewritten offer', body: 'rewritten offer' }]);
     expect(received).toBe('rewritten offer');
+  });
+
+  it('preserves a UTF-8 BOM in the offer sent upstream', async () => {
+    let received: string | undefined;
+    const upstream = await serve(async (request, response) => {
+      received = await body(request);
+      response.end('answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+    const offer = '\uFEFFv=0\r\n';
+
+    const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
+
+    expect(response.status).toBe(200);
+    expect(received).toBe(offer);
   });
 
   it('rebuilds join metadata and identity after replacing a request', async () => {
@@ -589,11 +618,12 @@ async function body(request: IncomingMessage): Promise<string> {
 async function sendHttp(
   address: string,
   path: string,
-  options: { agent?: Agent; body?: string; method?: string } = {},
+  options: { agent?: Agent; body?: string; headers?: OutgoingHttpHeaders; method?: string } = {},
 ): Promise<{ socket: Socket; status: number }> {
   return new Promise((resolve, reject) => {
     const request = httpRequest(new URL(path, address), {
       agent: options.agent,
+      headers: options.headers,
       method: options.method,
     });
     request.once('error', reject);

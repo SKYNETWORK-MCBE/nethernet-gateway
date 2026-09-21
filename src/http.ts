@@ -43,16 +43,18 @@ export async function readBody(request: Request): Promise<string> {
   let length = 0;
   if (!request.body) return '';
 
-  for await (const value of request.body) {
+  // A middleware owns its stream and may reuse it after next(), so never wait for its cancel().
+  for await (const value of request.body.values({ preventCancel: true })) {
     const chunk = Buffer.from(value);
     length += chunk.byteLength;
-    // for-await waits for automatic stream cancellation before preserving this size error.
     if (length > MAX_OFFER_BYTES) throw new RequestTooLargeError();
     chunks.push(chunk);
   }
 
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, length));
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+      Buffer.concat(chunks, length),
+    );
   } catch {
     throw new InvalidRequestBodyError();
   }

@@ -72,7 +72,7 @@ describe('HTTP adapters', () => {
     const body = new ReadableStream<Uint8Array>({
       cancel() {
         cancelled = true;
-        throw new Error('cancel failed');
+        return new Promise(() => {});
       },
       pull(controller) {
         if (pulls === 64) return controller.close();
@@ -86,7 +86,7 @@ describe('HTTP adapters', () => {
       duplex: 'half',
     } as RequestInit & { duplex: 'half' });
     await expect(readBody(streamed)).rejects.toBeInstanceOf(RequestTooLargeError);
-    expect(cancelled).toBe(true);
+    expect(cancelled).toBe(false);
     expect(pulls).toBeLessThan(64);
   });
 });

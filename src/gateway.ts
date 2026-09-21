@@ -189,7 +189,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
 
     let offer: string;
     try {
-      offer = await readBody(request);
+      offer = await readBody(request.clone());
     } catch (error) {
       if (error instanceof RequestTooLargeError) {
         return new Response('SDP offer is too large', { status: 413 });
@@ -327,7 +327,9 @@ async function runMiddleware<CTX extends GatewayContext>(
 
 function replaceHeaders(target: Headers, source: Headers): void {
   for (const name of Array.from(target.keys())) target.delete(name);
-  for (const [name, value] of source) target.set(name, value);
+  for (const [name, value] of source) {
+    if (name !== 'content-length' && name !== 'transfer-encoding') target.append(name, value);
+  }
 }
 
 async function replaceRequest<CTX extends GatewayContext>(

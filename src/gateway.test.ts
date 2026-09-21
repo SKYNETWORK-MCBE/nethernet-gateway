@@ -90,26 +90,30 @@ describe('NetherNetGateway', () => {
   });
 
   it.each([
-    ['an unterminated chunked burst', { 'Transfer-Encoding': 'chunked' }, chunk(1536 * 1024)],
+    ['an unterminated chunked burst', { 'Transfer-Encoding': 'chunked' }, chunk(8 * 1024 * 1024)],
     ['a stalled declared body', { 'Content-Length': String(512 * 1024 * 1024) }, 'x'.repeat(4096)],
   ])('rejects %s without blocking server close', async (_name, headers, body) => {
     const upstream = await serve((_request, response) => {
       response.end('ok');
     });
     const gateway = new NetherNetGateway({ upstream });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    const address = await serve((request, response) => {
+      markStarted();
+      return gateway.handleRequest(request, response);
+    });
     const server = servers.at(-1);
     if (!server) throw new Error('Missing gateway test server');
     const client = await sendIncompleteRequest(address, headers, body);
-    const result = await Promise.race([client.response, delay(1000).then(() => undefined)]);
-    client.socket.destroy();
-    const closed = await Promise.race([
-      closeServer(server).then(() => true),
-      delay(1000).then(() => false),
+    await started;
+    const result = await Promise.race([
+      Promise.all([client.response, closeServer(server)]).then(([response]) => response),
+      delay(1500).then(() => undefined),
     ]);
+    client.socket.destroy();
 
     expect(result).toContain(' 413 ');
-    expect(closed).toBe(true);
   });
 
   it('lets request middleware replace the request before routing', async () => {

@@ -3,7 +3,8 @@ import { finished } from 'node:stream/promises';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 
 const MAX_OFFER_BYTES = 1024 * 1024;
-const DRAIN_TIMEOUT_MS = 100;
+const DRAIN_TIMEOUT_MS = 500;
+const MAX_DRAIN_BYTES = 64 * 1024 * 1024;
 
 function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -35,7 +36,11 @@ export async function createRequest(incoming: IncomingMessage): Promise<Request>
 
 export async function readBody(request: Request): Promise<string> {
   const declaredLength = Number(request.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_OFFER_BYTES) {
+  if (
+    !request.headers.has('transfer-encoding') &&
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_OFFER_BYTES
+  ) {
     throw new RequestTooLargeError();
   }
 
@@ -62,7 +67,11 @@ export async function readBody(request: Request): Promise<string> {
 
 async function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {
   const declaredLength = Number(incoming.headers['content-length']);
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_OFFER_BYTES) {
+  if (
+    incoming.headers['transfer-encoding'] === undefined &&
+    Number.isFinite(declaredLength) &&
+    declaredLength > MAX_OFFER_BYTES
+  ) {
     throw new RequestTooLargeError();
   }
 
@@ -78,36 +87,37 @@ async function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks, length);
 }
 
-export async function drainIncomingBody(incoming: IncomingMessage): Promise<void> {
-  if (incoming.destroyed || incoming.readableEnded) return;
-
-  await new Promise<void>((resolve) => {
-    let drained = 0;
-    const timeout = setTimeout(finish, DRAIN_TIMEOUT_MS);
-    const onData = (chunk: Buffer) => {
-      drained += chunk.byteLength;
-      if (drained >= MAX_OFFER_BYTES) finish();
-    };
-
-    function finish() {
-      clearTimeout(timeout);
-      incoming.off('data', onData);
-      incoming.off('end', finish);
-      incoming.off('error', finish);
-      incoming.off('aborted', finish);
-      incoming.pause();
-      resolve();
-    }
-
-    incoming.on('data', onData);
-    incoming.once('end', finish);
-    incoming.once('error', finish);
-    incoming.once('aborted', finish);
-    incoming.resume();
-  });
+export async function writeResponse(response: ServerResponse, result: Response): Promise<void> {
+  const body = await prepareResponse(response, result);
+  const flushed = finished(response, { cleanup: true });
+  response.end(body);
+  await flushed;
 }
 
-export async function writeResponse(response: ServerResponse, result: Response): Promise<void> {
+export async function writeResponseWhileDraining(
+  incoming: IncomingMessage,
+  response: ServerResponse,
+  result: Response,
+): Promise<void> {
+  const body = await prepareResponse(response, result);
+
+  // Based on @hono/node-server's bounded early-response cleanup:
+  // https://github.com/honojs/node-server/commit/70250f780ec99d2ddc0dd8275a42f8e091e06e94
+  // Send the complete 413 before draining, but keep the ServerResponse active so
+  // server.close() cannot discard it.
+  response.flushHeaders();
+  await new Promise<void>((resolve, reject) => {
+    response.write(body, (error) => (error ? reject(error) : resolve()));
+  });
+
+  const forceClose = await drainIncomingBody(incoming);
+  const flushed = finished(response, { cleanup: true });
+  response.end();
+  await flushed;
+  if (forceClose && !incoming.socket.destroyed) incoming.socket.destroySoon();
+}
+
+async function prepareResponse(response: ServerResponse, result: Response): Promise<Buffer> {
   const body = Buffer.from(await result.arrayBuffer());
   response.statusCode = result.status;
   response.statusMessage = result.statusText;
@@ -118,7 +128,48 @@ export async function writeResponse(response: ServerResponse, result: Response):
   // If the status is 304, the runtime will throw a TypeError, so we don't need to remove the header ourselves.
   if (result.status === 204) response.removeHeader('content-length');
   else if (result.status !== 304) response.setHeader('content-length', body.length);
-  const flushed = finished(response, { cleanup: true });
-  response.end(body);
-  await flushed;
+  return body;
+}
+
+async function drainIncomingBody(incoming: IncomingMessage): Promise<boolean> {
+  if (incoming.destroyed || incoming.readableEnded) return false;
+
+  return new Promise<boolean>((resolve) => {
+    let drained = 0;
+    const timeout = setTimeout(() => finish(true), DRAIN_TIMEOUT_MS);
+    timeout.unref();
+
+    const onData = (chunk: Buffer) => {
+      drained += chunk.byteLength;
+      if (drained > MAX_DRAIN_BYTES) finish(true);
+    };
+
+    function cleanup() {
+      clearTimeout(timeout);
+      incoming.off('data', onData);
+      incoming.off('end', onEnd);
+      incoming.off('error', onAbort);
+      incoming.off('aborted', onAbort);
+    }
+
+    function finish(forceClose: boolean) {
+      cleanup();
+      incoming.pause();
+      resolve(forceClose);
+    }
+
+    function onEnd() {
+      finish(false);
+    }
+
+    function onAbort() {
+      finish(false);
+    }
+
+    incoming.on('data', onData);
+    incoming.once('end', onEnd);
+    incoming.once('error', onAbort);
+    incoming.once('aborted', onAbort);
+    incoming.resume();
+  });
 }

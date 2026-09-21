@@ -88,5 +88,16 @@ describe('HTTP adapters', () => {
     await expect(readBody(streamed)).rejects.toBeInstanceOf(RequestTooLargeError);
     expect(cancelled).toBe(false);
     expect(pulls).toBeLessThan(64);
+
+    const transferEncoded = new Request('http://localhost', {
+      method: 'POST',
+      headers: {
+        'content-length': String(1024 * 1024 + 1),
+        'transfer-encoding': 'chunked',
+      },
+      body: 'offer',
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+    await expect(readBody(transferEncoded)).resolves.toBe('offer');
   });
 });

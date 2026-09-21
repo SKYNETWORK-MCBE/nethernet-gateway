@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { proxyFetch } from 'httpxy';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 import { verifyClientIdentity } from './identity';
-import { createRequest, drainIncomingBody, readBody, writeResponse } from './http';
+import { createRequest, readBody, writeResponse, writeResponseWhileDraining } from './http';
 import type {
   GatewayMiddleware,
   GatewayContext,
@@ -72,6 +72,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   async handleRequest(incoming: IncomingMessage, response: ServerResponse): Promise<void> {
     const method = incoming.method ?? 'UNKNOWN';
     const url = incoming.url ?? '/';
+    let drainAfterResponse = false;
 
     let result: Response;
     if (method === 'CONNECT' || method === 'TRACE' || method === 'TRACK') {
@@ -97,9 +98,9 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
         }
       } catch (error) {
         if (error instanceof RequestTooLargeError) {
-          // A bounded drain clears in-flight data without letting a stalled sender block shutdown.
-          await drainIncomingBody(incoming);
-          response.shouldKeepAlive = false;
+          // Keep the connection alive until the 413 is flushed, then discard the remaining body.
+          // Closing before that can make unread TCP data turn the response into an ECONNRESET.
+          drainAfterResponse = true;
           result = new Response('Request body is too large', { status: 413 });
         } else {
           this.emitRequestError('request', error, method, url);
@@ -109,7 +110,8 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     }
 
     try {
-      await writeResponse(response, result);
+      if (drainAfterResponse) await writeResponseWhileDraining(incoming, response, result);
+      else await writeResponse(response, result);
     } catch (error) {
       this.emitRequestError('response', error, method, url);
       if (!response.headersSent) {

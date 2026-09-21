@@ -1,7 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { finished } from 'node:stream/promises';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 
 const MAX_OFFER_BYTES = 1024 * 1024;
+const DRAIN_TIMEOUT_MS = 100;
 
 function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -74,6 +76,35 @@ async function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks, length);
 }
 
+export async function drainIncomingBody(incoming: IncomingMessage): Promise<void> {
+  if (incoming.destroyed || incoming.readableEnded) return;
+
+  await new Promise<void>((resolve) => {
+    let drained = 0;
+    const timeout = setTimeout(finish, DRAIN_TIMEOUT_MS);
+    const onData = (chunk: Buffer) => {
+      drained += chunk.byteLength;
+      if (drained >= MAX_OFFER_BYTES) finish();
+    };
+
+    function finish() {
+      clearTimeout(timeout);
+      incoming.off('data', onData);
+      incoming.off('end', finish);
+      incoming.off('error', finish);
+      incoming.off('aborted', finish);
+      incoming.pause();
+      resolve();
+    }
+
+    incoming.on('data', onData);
+    incoming.once('end', finish);
+    incoming.once('error', finish);
+    incoming.once('aborted', finish);
+    incoming.resume();
+  });
+}
+
 export async function writeResponse(response: ServerResponse, result: Response): Promise<void> {
   const body = Buffer.from(await result.arrayBuffer());
   response.statusCode = result.status;
@@ -85,5 +116,7 @@ export async function writeResponse(response: ServerResponse, result: Response):
   // If the status is 304, the runtime will throw a TypeError, so we don't need to remove the header ourselves.
   if (result.status === 204) response.removeHeader('content-length');
   else if (result.status !== 304) response.setHeader('content-length', body.length);
+  const flushed = finished(response, { cleanup: true });
   response.end(body);
+  await flushed;
 }

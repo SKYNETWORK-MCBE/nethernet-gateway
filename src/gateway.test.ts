@@ -84,7 +84,10 @@ describe('NetherNetGateway', () => {
     expect(healthy.status).toBe(200);
   });
 
-  it('rejects an unterminated oversized chunked body without blocking server close', async () => {
+  it.each([
+    ['an unterminated chunked burst', { 'Transfer-Encoding': 'chunked' }, chunk(1536 * 1024)],
+    ['a stalled declared body', { 'Content-Length': String(512 * 1024 * 1024) }, 'x'.repeat(4096)],
+  ])('rejects %s without blocking server close', async (_name, headers, body) => {
     const upstream = await serve((_request, response) => {
       response.end('ok');
     });
@@ -92,17 +95,16 @@ describe('NetherNetGateway', () => {
     const address = await serve(gateway.handleRequest.bind(gateway));
     const server = servers.at(-1);
     if (!server) throw new Error('Missing gateway test server');
-    const client = await sendOversizedChunked(address);
-    const closing = closeServer(server);
-
-    const result = await Promise.race([
-      Promise.all([client.response, closing]).then(([response]) => response),
-      delay(1000).then(() => undefined),
-    ]);
+    const client = await sendIncompleteRequest(address, headers, body);
+    const result = await Promise.race([client.response, delay(1000).then(() => undefined)]);
     client.socket.destroy();
-    if (result === undefined) await closing;
+    const closed = await Promise.race([
+      closeServer(server).then(() => true),
+      delay(1000).then(() => false),
+    ]);
 
     expect(result).toContain(' 413 ');
+    expect(closed).toBe(true);
   });
 
   it('lets request middleware replace the request before routing', async () => {
@@ -618,16 +620,16 @@ async function abortRequest(address: string): Promise<void> {
   });
 }
 
-async function sendOversizedChunked(
+async function sendIncompleteRequest(
   address: string,
+  headers: Record<string, string>,
+  body: string,
 ): Promise<{ response: Promise<string>; socket: Socket }> {
   const url = new URL(address);
   let received = '';
   let resolveResponse!: (response: string) => void;
-  let rejectResponse!: (error: Error) => void;
-  const response = new Promise<string>((resolve, reject) => {
+  const response = new Promise<string>((resolve) => {
     resolveResponse = resolve;
-    rejectResponse = reject;
   });
   const socket = connect(Number(url.port), url.hostname);
   socket.setEncoding('utf8');
@@ -635,20 +637,23 @@ async function sendOversizedChunked(
     received += chunk;
   });
   socket.once('close', () => resolveResponse(received));
-  socket.once('error', rejectResponse);
+  socket.once('error', () => {});
 
   await new Promise<void>((resolve, reject) => {
     socket.once('connect', resolve);
     socket.once('error', reject);
   });
-  socket.write('POST /v1/join/1 HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n');
-  const chunk = 'x'.repeat(64 * 1024);
-  for (let index = 0; index < 17; index++) {
-    await writeSocket(socket, `${chunk.length.toString(16)}\r\n${chunk}\r\n`);
-    await delay(0);
-  }
+  const lines = Object.entries(headers).map(([name, value]) => `${name}: ${value}`);
+  await writeSocket(
+    socket,
+    `POST /v1/join/1 HTTP/1.1\r\nHost: localhost\r\n${lines.join('\r\n')}\r\n\r\n${body}`,
+  );
 
   return { response, socket };
+}
+
+function chunk(size: number): string {
+  return `${size.toString(16)}\r\n${'x'.repeat(size)}\r\n`;
 }
 
 async function writeSocket(socket: Socket, data: string): Promise<void> {

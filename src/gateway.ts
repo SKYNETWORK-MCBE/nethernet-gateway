@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { proxyFetch } from 'httpxy';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 import { verifyClientIdentity } from './identity';
-import { createRequest, readBody, writeResponse } from './http';
+import { createRequest, drainIncomingBody, readBody, writeResponse } from './http';
 import type {
   GatewayMiddleware,
   GatewayContext,
@@ -97,12 +97,9 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
         }
       } catch (error) {
         if (error instanceof RequestTooLargeError) {
-          if (incoming.headers['content-length'] === undefined) {
-            // Close after the 413 so an unterminated chunked body cannot keep server.close() waiting.
-            response.shouldKeepAlive = false;
-          } else {
-            incoming.resume();
-          }
+          // A bounded drain clears in-flight data without letting a stalled sender block shutdown.
+          await drainIncomingBody(incoming);
+          response.shouldKeepAlive = false;
           result = new Response('Request body is too large', { status: 413 });
         } else {
           this.emitRequestError('request', error, method, url);

@@ -279,7 +279,16 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     method: string,
     url: string,
   ): void {
-    this.emit('requestError', { source, error, method, url });
+    this.emit('requestError', { source, error, method, url: requestTarget(url) });
+  }
+}
+
+function requestTarget(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return value;
   }
 }
 

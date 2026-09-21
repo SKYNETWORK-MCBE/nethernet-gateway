@@ -504,6 +504,10 @@ describe('NetherNetGateway', () => {
     const brokenMiddleware = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
     const middlewareErrors: NetherNetGatewayErrorEvent[] = [];
     brokenMiddleware.on('requestError', (event) => middlewareErrors.push(event));
+    brokenMiddleware.use((context, next) => {
+      if (context.url.searchParams.has('global-error')) throw new Error('global boom');
+      return next();
+    });
     brokenMiddleware.use('info', () => {
       throw new Error('boom');
     });
@@ -516,14 +520,31 @@ describe('NetherNetGateway', () => {
     unreachable.on('requestError', (event) => upstreamErrors.push(event));
     const unreachableAddress = await serve(unreachable.handleRequest.bind(unreachable));
 
+    expect((await fetch(`${brokenMiddlewareAddress}/v1/join?global-error=1`)).status).toBe(500);
     expect((await fetch(`${brokenMiddlewareAddress}/v1/join`)).status).toBe(500);
     expect((await fetch(`${unreachableAddress}/v1/join`)).status).toBe(502);
     expect((await fetch(`${unreachableAddress}/other`)).status).toBe(404);
     expect(middlewareErrors).toEqual([
-      expect.objectContaining({ source: 'middleware', error: expect.any(Error), method: 'GET' }),
+      expect.objectContaining({
+        source: 'middleware',
+        error: expect.any(Error),
+        method: 'GET',
+        url: '/v1/join?global-error=1',
+      }),
+      expect.objectContaining({
+        source: 'middleware',
+        error: expect.any(Error),
+        method: 'GET',
+        url: '/v1/join',
+      }),
     ]);
     expect(upstreamErrors).toEqual([
-      expect.objectContaining({ source: 'upstream', error: expect.any(Error), method: 'GET' }),
+      expect.objectContaining({
+        source: 'upstream',
+        error: expect.any(Error),
+        method: 'GET',
+        url: '/v1/join',
+      }),
     ]);
   });
 

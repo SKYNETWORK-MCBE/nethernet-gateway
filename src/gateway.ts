@@ -19,7 +19,7 @@ export interface NetherNetGatewayEvents {
 }
 
 export interface NetherNetGatewayOptions {
-  upstream: string;
+  upstream: string | ((ctx: GatewayContext) => string);
   verifyClientToken?: VerifyClientToken;
   requireClientIdentity?: boolean;
 }
@@ -238,9 +238,15 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     return identity;
   }
 
-  private async proxy(request: Request): Promise<Response> {
+  private async proxy(context: GatewayContext): Promise<Response> {
+    const request = context.req.clone();
+
     try {
-      if (!request.body) return await proxyFetch(this.options.upstream, request);
+      const upstream =
+        typeof this.options.upstream === 'function'
+          ? this.options.upstream(context)
+          : this.options.upstream;
+      if (!request.body) return await proxyFetch(upstream, request);
 
       // BDS requires a content length and does not read httpxy's chunked request body.
       const body = Buffer.from(await request.arrayBuffer());
@@ -248,7 +254,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       headers.delete('transfer-encoding');
       headers.set('content-length', String(body.byteLength));
 
-      return await proxyFetch(this.options.upstream, request, { body, headers });
+      return await proxyFetch(upstream, request, { body, headers });
     } catch (error) {
       this.emitRequestError('upstream', error, request.method, request.url);
       return new Response('Bad Gateway', { status: 502 });
@@ -261,12 +267,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     replace?: ReplaceContext<CTX>,
   ): Promise<Response> {
     try {
-      return await runMiddleware(
-        middleware,
-        context,
-        ({ req }) => this.proxy(req.clone()),
-        replace,
-      );
+      return await runMiddleware(middleware, context, (context) => this.proxy(context), replace);
     } catch (error) {
       this.emitRequestError('middleware', error, context.req.method, context.req.url);
       return new Response('Internal Server Error', { status: 500 });

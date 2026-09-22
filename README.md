@@ -29,6 +29,23 @@ await gateway.listen(8080);
 
 Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
+### Choose an upstream dynamically
+
+Pass a function to `upstream` to route multiple public hostnames through one gateway.
+
+```ts
+const upstreams = new Map([
+  ['survival.example.com', 'http://localhost:19132'],
+  ['creative.example.com', 'http://localhost:19133'],
+]);
+
+const gateway = new NetherNetGateway({
+  upstream: (c) => upstreams.get(c.url.hostname) ?? 'http://localhost:19132',
+});
+```
+
+The function runs after request middleware calls `next()`, immediately before the request is proxied. If middleware passes a replacement `Request` to `next()`, the function receives the replacement request and URL. It is not called when middleware returns an early response.
+
 ## Middleware
 
 Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Every middleware receives its own request clone and parsed URL, so reading the body or changing `c.url` does not affect later middleware. Changes to `c.req.headers` are carried forward when `next()` is called. Pass a replacement `Request` to `next()` to change the downstream method, URL, or body and routing.

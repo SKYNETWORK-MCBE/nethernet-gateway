@@ -188,6 +188,8 @@ gateway.on('requestError', ({ source, error, method, url }) => {
 });
 ```
 
+`url` is consistently reported as the request path and query string, without the origin.
+
 Authentication failures and other expected `4xx` responses are not emitted.
 
 ## Security

@@ -3,6 +3,7 @@ import { finished } from 'node:stream/promises';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 
 const MAX_OFFER_BYTES = 1024 * 1024;
+// This is a total cleanup budget, not an idle timeout reset by incoming data.
 const DRAIN_TIMEOUT_MS = 500;
 const MAX_DRAIN_BYTES = 64 * 1024 * 1024;
 
@@ -67,6 +68,8 @@ export async function readBody(request: Request): Promise<string> {
 
 async function readIncomingBody(incoming: IncomingMessage): Promise<Buffer> {
   const declaredLength = Number(incoming.headers['content-length']);
+  // Transfer-Encoding takes precedence over Content-Length. Node's default parser rejects
+  // requests containing both, but this also covers servers using insecureHTTPParser.
   if (
     incoming.headers['transfer-encoding'] === undefined &&
     Number.isFinite(declaredLength) &&

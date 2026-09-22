@@ -1,6 +1,10 @@
 import { base64url, decodeProtectedHeader, flattenedVerify, importJWK, type JWK } from 'jose';
 import * as v from 'valibot';
-import type { NetherNetIdentity, VerifyClientToken } from './types';
+import {
+  minecraftIdentityClaimsSchema,
+  normalizeMinecraftIdentityClaims,
+} from './minecraft/claims';
+import type { NetherNetIdentity, UntrustedNetherNetIdentity, VerifyClientToken } from './types';
 
 const ASYMMETRIC_JWS_ALGORITHMS = [
   'ES256',
@@ -28,18 +32,34 @@ const identityAssertionSchema = v.object({
   fingerprints: v.string(),
 });
 
-const identitySchema = v.object({
-  xuid: v.pipe(v.string(), v.nonEmpty()),
-  cpk: v.pipe(
-    v.looseObject({ kty: v.optional(v.string()) }),
-    v.check((key) => key.kty !== 'oct'),
-  ),
-  claims: v.record(v.string(), v.unknown()),
-  playFabId: v.optional(v.string()),
-  uuid: v.optional(v.string()),
-});
+const claimsSchema = v.record(v.string(), v.unknown());
 
 type IdentityAssertion = v.InferOutput<typeof identityAssertionSchema>;
+
+/** Decodes client-supplied JWT claims without authenticating them. */
+export function extractUntrustedClientIdentity(
+  offer: string,
+): UntrustedNetherNetIdentity | undefined {
+  const assertion = parseIdentityAssertion(offer);
+  if (!assertion) return undefined;
+
+  const [header, payload, signature, extra] = assertion.token.split('.');
+  if (!header || !payload || !signature || extra !== undefined) {
+    throw new Error('Invalid identity token');
+  }
+
+  const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  const claimsResult = v.safeParse(claimsSchema, decoded);
+  const identityResult = v.safeParse(minecraftIdentityClaimsSchema, decoded);
+  if (!claimsResult.success || !identityResult.success) {
+    throw new Error('Invalid identity claims');
+  }
+
+  return {
+    ...normalizeMinecraftIdentityClaims(identityResult.output),
+    claims: claimsResult.output,
+  };
+}
 
 // The callback verifies the token; the token's `cpk` public key must also verify the offer's SDP fingerprints:
 // https://mojang.github.io/bedrock-protocol-docs/guides/nether-net-onboarding-guide/#51-validating-the-client-assertion-in-the-offer
@@ -51,7 +71,6 @@ export async function verifyClientIdentity(
   if (!assertion) return undefined;
 
   const identity = await verifyClientToken(assertion.token);
-  validateIdentity(identity);
   await verifyFingerprintAssertion(offer, assertion.fingerprints, identity.cpk);
   return identity;
 }
@@ -120,10 +139,4 @@ async function verifyFingerprintAssertion(
   await flattenedVerify({ protected: protectedHeader, payload, signature }, key, {
     algorithms: [alg],
   });
-}
-
-function validateIdentity(identity: NetherNetIdentity): void {
-  if (!v.safeParse(identitySchema, identity).success) {
-    throw new Error('Invalid verified identity');
-  }
 }

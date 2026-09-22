@@ -73,7 +73,7 @@ describe('logger', () => {
 
     const response = await fetch(`${address}/v1/join/9876543210123456789?source=test`, {
       method: 'POST',
-      body: 'v=0\r\n',
+      body: identityOffer(),
     });
 
     expect(response.status).toBe(200);
@@ -119,3 +119,14 @@ describe('logger', () => {
     ]);
   });
 });
+
+function identityOffer(): string {
+  const claims = Buffer.from(
+    JSON.stringify({ xid: '0000000000000000', mid: '0000000000000000', xname: 'Player' }),
+  ).toString('base64url');
+  const envelope = {
+    idp: { domain: 'auth.example', protocol: 'default' },
+    assertion: JSON.stringify({ token: `e30.${claims}.signature`, fingerprints: 'unused' }),
+  };
+  return `v=0\r\na=identity:${Buffer.from(JSON.stringify(envelope)).toString('base64')}`;
+}

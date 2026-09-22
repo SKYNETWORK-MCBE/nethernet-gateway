@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: [self-hosted, sky-docker]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6

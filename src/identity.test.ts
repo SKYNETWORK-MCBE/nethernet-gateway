@@ -67,6 +67,36 @@ describe('verifyClientIdentity', () => {
       }),
     ).rejects.toThrow('Multiple identity assertions');
   });
+
+  it('rejects invalid identity envelope and assertion shapes', async () => {
+    const invalidEnvelope = offerWithIdentity({
+      idp: { domain: 'auth.example', protocol: 'unsupported' },
+      assertion: '{}',
+    });
+    const invalidAssertion = offerWithIdentity({
+      idp: { domain: 'auth.example', protocol: 'default' },
+      assertion: JSON.stringify({ token: 'token' }),
+    });
+
+    await expect(verifyClientIdentity(invalidEnvelope, () => identity({}))).rejects.toThrow(
+      'Invalid identity envelope',
+    );
+    await expect(verifyClientIdentity(invalidAssertion, () => identity({}))).rejects.toThrow(
+      'Invalid identity assertion',
+    );
+  });
+
+  it('rejects an invalid identity returned by the token verifier', async () => {
+    const signedOffer = await createSignedOffer();
+
+    await expect(
+      verifyClientIdentity(signedOffer.offer, () => ({
+        xuid: '',
+        cpk: signedOffer.publicKey,
+        claims: {},
+      })),
+    ).rejects.toThrow('Invalid verified identity');
+  });
 });
 
 async function createSignedOffer(): Promise<{ offer: string; publicKey: JWK }> {
@@ -98,12 +128,18 @@ async function createSignedOffer(): Promise<{ offer: string; publicKey: JWK }> {
 }
 
 function encodeAssertion(): string {
-  return Buffer.from(
-    JSON.stringify({
-      idp: { domain: 'auth.example', protocol: 'default' },
-      assertion: JSON.stringify({ token: 'token', fingerprints: 'unused' }),
-    }),
-  ).toString('base64');
+  return encodeIdentity({
+    idp: { domain: 'auth.example', protocol: 'default' },
+    assertion: JSON.stringify({ token: 'token', fingerprints: 'unused' }),
+  });
+}
+
+function offerWithIdentity(value: unknown): string {
+  return ['v=0', `a=identity:${encodeIdentity(value)}`].join('\r\n');
+}
+
+function encodeIdentity(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString('base64');
 }
 
 function identity(cpk: JWK): NetherNetIdentity {

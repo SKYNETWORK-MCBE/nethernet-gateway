@@ -1,4 +1,5 @@
 import { base64url, decodeProtectedHeader, flattenedVerify, importJWK, type JWK } from 'jose';
+import * as v from 'valibot';
 import type { NetherNetIdentity, VerifyClientToken } from './types';
 
 const ASYMMETRIC_JWS_ALGORITHMS = [
@@ -14,15 +15,31 @@ const ASYMMETRIC_JWS_ALGORITHMS = [
   'EdDSA',
 ] as const;
 
-type IdentityEnvelope = {
-  idp: { domain: string; protocol: 'default' };
-  assertion: string;
-};
+const identityEnvelopeSchema = v.object({
+  idp: v.object({
+    domain: v.string(),
+    protocol: v.literal('default'),
+  }),
+  assertion: v.string(),
+});
 
-type IdentityAssertion = {
-  token: string;
-  fingerprints: string;
-};
+const identityAssertionSchema = v.object({
+  token: v.string(),
+  fingerprints: v.string(),
+});
+
+const identitySchema = v.object({
+  xuid: v.pipe(v.string(), v.nonEmpty()),
+  cpk: v.pipe(
+    v.looseObject({ kty: v.optional(v.string()) }),
+    v.check((key) => key.kty !== 'oct'),
+  ),
+  claims: v.record(v.string(), v.unknown()),
+  playFabId: v.optional(v.string()),
+  uuid: v.optional(v.string()),
+});
+
+type IdentityAssertion = v.InferOutput<typeof identityAssertionSchema>;
 
 // The callback verifies the token; the token's `cpk` public key must also verify the offer's SDP fingerprints:
 // https://mojang.github.io/bedrock-protocol-docs/guides/nether-net-onboarding-guide/#51-validating-the-client-assertion-in-the-offer
@@ -54,27 +71,22 @@ function parseIdentityAssertion(offer: string): IdentityAssertion | undefined {
   if (identityLines.length !== 1) throw new Error('Multiple identity assertions');
 
   const encoded = identityLines[0].slice('a=identity:'.length);
-  const envelope = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')) as IdentityEnvelope;
-  if (
-    !envelope ||
-    typeof envelope !== 'object' ||
-    typeof envelope.idp?.domain !== 'string' ||
-    envelope.idp.protocol !== 'default' ||
-    typeof envelope.assertion !== 'string'
-  ) {
+  const envelopeResult = v.safeParse(
+    identityEnvelopeSchema,
+    JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')),
+  );
+  if (!envelopeResult.success) {
     throw new Error('Invalid identity envelope');
   }
 
-  const assertion = JSON.parse(envelope.assertion) as IdentityAssertion;
-  if (
-    !assertion ||
-    typeof assertion !== 'object' ||
-    typeof assertion.token !== 'string' ||
-    typeof assertion.fingerprints !== 'string'
-  ) {
+  const assertionResult = v.safeParse(
+    identityAssertionSchema,
+    JSON.parse(envelopeResult.output.assertion),
+  );
+  if (!assertionResult.success) {
     throw new Error('Invalid identity assertion');
   }
-  return assertion;
+  return assertionResult.output;
 }
 
 async function verifyFingerprintAssertion(
@@ -111,16 +123,7 @@ async function verifyFingerprintAssertion(
 }
 
 function validateIdentity(identity: NetherNetIdentity): void {
-  if (
-    !identity ||
-    typeof identity.xuid !== 'string' ||
-    identity.xuid.length === 0 ||
-    !identity.claims ||
-    typeof identity.claims !== 'object' ||
-    !identity.cpk ||
-    typeof identity.cpk !== 'object' ||
-    identity.cpk.kty === 'oct'
-  ) {
+  if (!v.safeParse(identitySchema, identity).success) {
     throw new Error('Invalid verified identity');
   }
 }

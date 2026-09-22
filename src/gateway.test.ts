@@ -240,6 +240,64 @@ describe('NetherNetGateway', () => {
     ]);
   });
 
+  it('resolves the upstream from the context after middleware replaces the request', async () => {
+    const primary = await serve((_req, res) => {
+      res.end('primary');
+    });
+    const secondary = await serve((_req, res) => {
+      res.end('secondary');
+    });
+    const resolved: string[] = [];
+    const gateway = new NetherNetGateway({
+      upstream: (context) => {
+        expect(context.req.url).toBe(context.url.href);
+        resolved.push(`${context.req.method} ${context.url.pathname}${context.url.search}`);
+        return context.url.searchParams.has('secondary') ? secondary : primary;
+      },
+    });
+    gateway.use('info', (context, next) => {
+      if (!context.url.searchParams.has('replace')) return next();
+
+      return next(
+        new Request(new URL('/v1/join?secondary=1', context.req.url), {
+          headers: context.req.headers,
+        }),
+      );
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const primaryResponse = await fetch(`${address}/v1/join`);
+    const secondaryResponse = await fetch(`${address}/v1/join?replace=1`);
+
+    expect(await primaryResponse.text()).toBe('primary');
+    expect(await secondaryResponse.text()).toBe('secondary');
+    expect(resolved).toEqual(['GET /v1/join', 'GET /v1/join?secondary=1']);
+  });
+
+  it('reports upstream resolver failures as bad gateway errors', async () => {
+    const failure = new Error('resolver failed');
+    const gateway = new NetherNetGateway({
+      upstream: () => {
+        throw failure;
+      },
+    });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    gateway.on('requestError', (event) => errors.push(event));
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const response = await fetch(`${address}/v1/join`);
+
+    expect(response.status).toBe(502);
+    expect(errors).toEqual([
+      {
+        source: 'upstream',
+        error: failure,
+        method: 'GET',
+        url: '/v1/join',
+      },
+    ]);
+  });
+
   it('proxies join metadata and SDP without requiring identity by default', async () => {
     let received: { method?: string; url?: string; header?: string; body?: string } = {};
     const upstream = await serve(async (req, res) => {

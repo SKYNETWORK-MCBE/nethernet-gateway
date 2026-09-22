@@ -1,20 +1,16 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
-import { createRequest, readBody, RequestTooLargeError, requestUrl, writeResponse } from './http';
+import { RequestTooLargeError } from './errors';
+import { createRequest, readBody, writeResponse } from './http';
+import { createTestServers } from './test-server';
 
-const servers: Server[] = [];
+const { serve, closeAll } = createTestServers();
 
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map(closeServer));
-});
+afterEach(closeAll);
 
 describe('HTTP adapters', () => {
   it('converts incoming requests and writes Fetch responses', async () => {
     const address = await serve(async (incoming, response) => {
-      const url = requestUrl(incoming);
-      const body = await readBody(incoming);
-      const request = createRequest(incoming, url, body);
+      const request = await createRequest(incoming);
       await writeResponse(
         response,
         Response.json(
@@ -22,7 +18,7 @@ describe('HTTP adapters', () => {
             method: request.method,
             url: new URL(request.url).pathname + new URL(request.url).search,
             header: request.headers.get('x-test'),
-            body: await request.text(),
+            body: await readBody(request),
           },
           { status: 201, headers: { 'x-response': 'copied' } },
         ),
@@ -65,37 +61,43 @@ describe('HTTP adapters', () => {
   });
 
   it('enforces the body limit from both the declared and streamed byte counts', async () => {
-    const declared = incomingStream([], { 'content-length': String(1024 * 1024 + 1) });
+    const declared = new Request('http://localhost', {
+      method: 'POST',
+      headers: { 'content-length': String(1024 * 1024 + 1) },
+    });
     await expect(readBody(declared)).rejects.toBeInstanceOf(RequestTooLargeError);
 
-    const streamed = incomingStream([Buffer.alloc(1024 * 1024 + 1)]);
+    let cancelled = false;
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+        return new Promise(() => {});
+      },
+      pull(controller) {
+        if (pulls === 64) return controller.close();
+        pulls++;
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+    });
+    const streamed = new Request('http://localhost', {
+      method: 'POST',
+      body,
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
     await expect(readBody(streamed)).rejects.toBeInstanceOf(RequestTooLargeError);
+    expect(cancelled).toBe(false);
+    expect(pulls).toBeLessThan(64);
+
+    const transferEncoded = new Request('http://localhost', {
+      method: 'POST',
+      headers: {
+        'content-length': String(1024 * 1024 + 1),
+        'transfer-encoding': 'chunked',
+      },
+      body: 'offer',
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+    await expect(readBody(transferEncoded)).resolves.toBe('offer');
   });
 });
-
-function incomingStream(chunks: Buffer[], headers: Record<string, string> = {}): IncomingMessage {
-  const request = Readable.from(chunks) as unknown as IncomingMessage;
-  request.headers = headers;
-  return request;
-}
-
-async function serve(
-  handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
-): Promise<string> {
-  const server = createServer(handler);
-  servers.push(server);
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Missing test server address');
-  return `http://127.0.0.1:${address.port}`;
-}
-
-async function closeServer(server: Server): Promise<void> {
-  if (!server.listening) return;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-}

@@ -31,7 +31,19 @@ Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
 ## Middleware
 
-Server information and join attempts have separate middleware stacks. Middleware can return its own response or call `next()` to receive and modify the downstream response. A join middleware can also pass a replacement request to `next()` to change the offer that reaches the upstream server.
+Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Every middleware receives its own request clone and parsed URL, so reading the body or changing `context.url` does not affect later middleware. Changes to `context.request.headers` are carried forward when `next()` is called. Pass a replacement `Request` to `next()` to change the downstream method, URL, or body and routing.
+
+```ts
+gateway.use(async (context, next) => {
+  if (context.url.pathname === '/health') return new Response('OK');
+
+  const response = await next();
+  console.log(context.request.method, response.status);
+  return response;
+});
+```
+
+Server information and join attempts also have separate middleware stacks. A join middleware can pass a replacement request to `next()` to change the offer that reaches the upstream server. The gateway then parses the Network ID and offer again and repeats identity verification before running later join middleware.
 
 ### Change server information
 
@@ -168,7 +180,7 @@ createServer(gateway.handleRequest.bind(gateway)).listen(8080);
 
 ## Observe request errors
 
-Errors converted into `500` or `502` responses are also emitted for logging and metrics.
+Unexpected request, middleware, upstream, and response failures are emitted for logging and metrics.
 
 ```ts
 gateway.on('requestError', ({ source, error, method, url }) => {
@@ -176,14 +188,34 @@ gateway.on('requestError', ({ source, error, method, url }) => {
 });
 ```
 
+`url` is consistently reported as the request path and query string, without the origin.
+
 Authentication failures and other expected `4xx` responses are not emitted.
+
+## Log requests
+
+Register `logger()` once to log every request.
+
+```ts
+import { logger } from 'nethernet-gateway';
+
+gateway.use(logger());
+// --> POST /v1/join/9876543210123456789
+// <-- POST /v1/join/9876543210123456789 200 12ms
+```
+
+Response status codes are colored by category. Set `NO_COLOR` to disable ANSI colors. Pass a print function to send the lines to another logger:
+
+```ts
+gateway.use(logger((line) => appLogger.info(line)));
+```
 
 ## Security
 
 - Put the public signaling endpoint behind HTTPS. TLS termination is outside this package.
 - A decoded JWT is not an authenticated identity. Verify its signature and expected claims in `verifyClientToken`.
 - Invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
-- SDP offers larger than 1 MiB are rejected with `413`.
+- Request bodies larger than 1 MiB are rejected with `413` before middleware runs. SDP offers must also be valid UTF-8.
 - To hide the global IP address of the backend, override ICE candidate. (See the "Rewrite ICE candidates" section.)
 
 ## Acknowledgements

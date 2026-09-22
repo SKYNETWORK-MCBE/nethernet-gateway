@@ -29,21 +29,23 @@ export interface NetherNetGatewayErrorEvent {
   readonly url: string;
 }
 
-export interface ServerInfoContext {
+export interface GatewayContext {
   readonly request: Request;
+  readonly url: URL;
 }
 
-export interface JoinContext {
-  readonly request: Request;
+export interface ServerInfoContext extends GatewayContext {}
+
+export interface JoinContext extends GatewayContext {
   readonly networkId: string;
   readonly offer: string;
   readonly identity?: NetherNetIdentity;
 }
 
-export type GatewayContext = ServerInfoContext | JoinContext;
-// A join middleware can pass a replacement request to change the offer sent upstream.
+/** A middleware can pass a replacement request to change the request sent downstream. */
 export type Next = (request?: Request) => Promise<Response>;
-export type GatewayMiddleware<Context extends GatewayContext> = (
-  context: Context,
+
+export type GatewayMiddleware<CTX extends GatewayContext = GatewayContext> = (
+  context: CTX,
   next: Next,
 ) => Awaitable<Response>;

@@ -4,7 +4,7 @@ export function createTestServers() {
   const servers: Server[] = [];
 
   async function serve(
-    handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
+    handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
   ): Promise<string> {
     const server = createServer(handler);
     servers.push(server);

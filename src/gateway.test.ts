@@ -18,18 +18,18 @@ afterEach(closeAll);
 describe('NetherNetGateway', () => {
   it('runs request middleware around every route and allows early responses', async () => {
     let upstreamRequests = 0;
-    const upstream = await serve((_request, response) => {
+    const upstream = await serve((_req, res) => {
       upstreamRequests++;
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(serverInfo));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(serverInfo));
     });
     const gateway = new NetherNetGateway({ upstream });
     const order: string[] = [];
-    gateway.use(async (context, next) => {
-      expect(context.request).toBeInstanceOf(Request);
-      expect(new URL(context.request.url)).toEqual(context.url);
-      order.push(`before:${context.url.pathname}`);
-      if (context.url.searchParams.has('block')) {
+    gateway.use(async (c, next) => {
+      expect(c.req).toBeInstanceOf(Request);
+      expect(new URL(c.req.url)).toEqual(c.url);
+      order.push(`before:${c.url.pathname}`);
+      if (c.url.searchParams.has('block')) {
         return new Response('Blocked', { status: 418 });
       }
       const response = await next();
@@ -48,12 +48,12 @@ describe('NetherNetGateway', () => {
   });
 
   it('reuses a connection after middleware returns before proxying', async () => {
-    const upstream = await serve((_request, response) => {
-      response.end('ok');
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
     });
     const gateway = new NetherNetGateway({ upstream });
-    gateway.use((context, next) =>
-      context.url.pathname === '/early' ? new Response(null, { status: 204 }) : next(),
+    gateway.use((c, next) =>
+      c.url.pathname === '/early' ? new Response(null, { status: 204 }) : next(),
     );
     const address = await serve(gateway.handleRequest.bind(gateway));
     const agent = new Agent({ keepAlive: true, maxSockets: 1 });
@@ -75,8 +75,8 @@ describe('NetherNetGateway', () => {
   });
 
   it('survives an aborted request body and rejects unsupported Fetch methods', async () => {
-    const upstream = await serve((_request, response) => {
-      response.end('ok');
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
     });
     const gateway = new NetherNetGateway({ upstream });
     const address = await serve(gateway.handleRequest.bind(gateway));
@@ -93,15 +93,15 @@ describe('NetherNetGateway', () => {
     ['an unterminated chunked burst', { 'Transfer-Encoding': 'chunked' }, chunk(8 * 1024 * 1024)],
     ['a stalled declared body', { 'Content-Length': String(512 * 1024 * 1024) }, 'x'.repeat(4096)],
   ])('rejects %s without blocking server close', async (_name, headers, body) => {
-    const upstream = await serve((_request, response) => {
-      response.end('ok');
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
     });
     const gateway = new NetherNetGateway({ upstream });
     let markStarted!: () => void;
     const started = new Promise<void>((resolve) => (markStarted = resolve));
-    const address = await serve((request, response) => {
+    const address = await serve((req, res) => {
       markStarted();
-      return gateway.handleRequest(request, response);
+      return gateway.handleRequest(req, res);
     });
     const server = servers.at(-1);
     if (!server) throw new Error('Missing gateway test server');
@@ -117,16 +117,16 @@ describe('NetherNetGateway', () => {
   });
 
   it('lets request middleware replace the request before routing', async () => {
-    const upstream = await serve((_request, response) => {
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(serverInfo));
+    const upstream = await serve((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(serverInfo));
     });
     const gateway = new NetherNetGateway({ upstream });
-    gateway.use((context, next) =>
+    gateway.use((c, next) =>
       next(
-        new Request(new URL('/v1/join', context.request.url), {
+        new Request(new URL('/v1/join', c.req.url), {
           method: 'GET',
-          headers: context.request.headers,
+          headers: c.req.headers,
         }),
       ),
     );
@@ -140,19 +140,19 @@ describe('NetherNetGateway', () => {
 
   it('isolates request bodies and URLs between middleware', async () => {
     let received: string | undefined;
-    const upstream = await serve(async (request, response) => {
-      received = await body(request);
-      response.end('answer');
+    const upstream = await serve(async (req, res) => {
+      received = await body(req);
+      res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
     const seen: string[] = [];
-    gateway.use(async (context, next) => {
-      seen.push(await context.request.text());
-      context.url.pathname = '/other';
+    gateway.use(async (c, next) => {
+      seen.push(await c.req.text());
+      c.url.pathname = '/other';
       return next();
     });
-    gateway.use(async (context, next) => {
-      seen.push(await context.request.text());
+    gateway.use(async (c, next) => {
+      seen.push(await c.req.text());
       return next();
     });
     const address = await serve(gateway.handleRequest.bind(gateway));
@@ -167,23 +167,23 @@ describe('NetherNetGateway', () => {
   it('carries mutable request headers through global and join middleware', async () => {
     let received: IncomingMessage['headers'] = {};
     let cookies: string[] | undefined;
-    const upstream = await serve((request, response) => {
-      received = request.headers;
-      cookies = request.headersDistinct['set-cookie'];
-      response.end('answer');
+    const upstream = await serve((req, res) => {
+      received = req.headers;
+      cookies = req.headersDistinct['set-cookie'];
+      res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
-    gateway.use((context, next) => {
-      context.request.headers.set('x-global', 'global');
-      context.request.headers.delete('x-remove');
-      context.request.headers.set('content-length', String(4 * 1024 * 1024));
-      context.request.headers.set('transfer-encoding', 'chunked');
+    gateway.use((c, next) => {
+      c.req.headers.set('x-global', 'global');
+      c.req.headers.delete('x-remove');
+      c.req.headers.set('content-length', String(4 * 1024 * 1024));
+      c.req.headers.set('transfer-encoding', 'chunked');
       return next();
     });
-    gateway.use('join', (context, next) => {
-      expect(context.request.headers.get('x-global')).toBe('global');
-      expect(context.request.headers.has('x-remove')).toBe(false);
-      context.request.headers.set('x-join', 'join');
+    gateway.use('join', (c, next) => {
+      expect(c.req.headers.get('x-global')).toBe('global');
+      expect(c.req.headers.has('x-remove')).toBe(false);
+      c.req.headers.set('x-join', 'join');
       return next();
     });
     const address = await serve(gateway.handleRequest.bind(gateway));
@@ -205,20 +205,20 @@ describe('NetherNetGateway', () => {
 
   it('runs info middleware around the upstream response', async () => {
     const order: string[] = [];
-    const upstream = await serve((_request, response) => {
+    const upstream = await serve((_req, res) => {
       order.push('upstream');
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(serverInfo));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(serverInfo));
     });
     const gateway = new NetherNetGateway({ upstream });
 
-    gateway.use('info', async (_context, next) => {
+    gateway.use('info', async (_c, next) => {
       order.push('first:before');
       const response = await next();
       order.push('first:after');
       return response;
     });
-    gateway.use('info', async (_context, next) => {
+    gateway.use('info', async (_c, next) => {
       order.push('second:before');
       const response = await next();
       const info = (await response.json()) as NetherNetServerInfo;
@@ -242,23 +242,23 @@ describe('NetherNetGateway', () => {
 
   it('proxies join metadata and SDP without requiring identity by default', async () => {
     let received: { method?: string; url?: string; header?: string; body?: string } = {};
-    const upstream = await serve(async (request, response) => {
+    const upstream = await serve(async (req, res) => {
       received = {
-        method: request.method,
-        url: request.url,
-        header: request.headers['x-test'] as string,
-        body: await body(request),
+        method: req.method,
+        url: req.url,
+        header: req.headers['x-test'] as string,
+        body: await body(req),
       };
-      response.setHeader('content-type', 'application/sdp');
-      response.end('answer');
+      res.setHeader('content-type', 'application/sdp');
+      res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
     let contextIdentity: NetherNetIdentity | undefined;
-    gateway.use('join', (context, next) => {
-      expect(context.networkId).toBe('network id');
-      expect(context.url.searchParams.get('source')).toBe('test');
-      expect(context.offer).toBe('offer');
-      contextIdentity = context.identity;
+    gateway.use('join', (c, next) => {
+      expect(c.networkId).toBe('network id');
+      expect(c.url.searchParams.get('source')).toBe('test');
+      expect(c.offer).toBe('offer');
+      contextIdentity = c.identity;
       return next();
     });
 
@@ -281,16 +281,16 @@ describe('NetherNetGateway', () => {
 
   it('lets join middleware replace the offer and the answer', async () => {
     let received: string | undefined;
-    const upstream = await serve(async (request, response) => {
-      received = await body(request);
-      response.setHeader('content-type', 'application/sdp');
-      response.end('a long upstream answer');
+    const upstream = await serve(async (req, res) => {
+      received = await body(req);
+      res.setHeader('content-type', 'application/sdp');
+      res.end('a long upstream answer');
     });
     const gateway = new NetherNetGateway({ upstream });
-    gateway.use('join', async (context, next) => {
-      const replaced = new Request(context.request, {
+    gateway.use('join', async (c, next) => {
+      const replaced = new Request(c.req, {
         method: 'POST',
-        body: `rewritten ${context.offer}`,
+        body: `rewritten ${c.offer}`,
       });
       const response = await next(replaced);
       expect(await replaced.text()).toBe('rewritten offer');
@@ -308,18 +308,18 @@ describe('NetherNetGateway', () => {
 
   it('hands the replaced offer to the middleware below it', async () => {
     let received: string | undefined;
-    const upstream = await serve(async (request, response) => {
-      received = await body(request);
-      response.end('answer');
+    const upstream = await serve(async (req, res) => {
+      received = await body(req);
+      res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
     const seen: { offer: string; body: string }[] = [];
 
-    gateway.use('join', (context, next) =>
-      next(new Request(context.request, { method: 'POST', body: `rewritten ${context.offer}` })),
+    gateway.use('join', (c, next) =>
+      next(new Request(c.req, { method: 'POST', body: `rewritten ${c.offer}` })),
     );
-    gateway.use('join', async (context, next) => {
-      seen.push({ offer: context.offer, body: await context.request.clone().text() });
+    gateway.use('join', async (c, next) => {
+      seen.push({ offer: c.offer, body: await c.req.clone().text() });
       return next();
     });
 
@@ -332,9 +332,9 @@ describe('NetherNetGateway', () => {
 
   it('preserves a UTF-8 BOM in the offer sent upstream', async () => {
     let received: string | undefined;
-    const upstream = await serve(async (request, response) => {
-      received = await body(request);
-      response.end('answer');
+    const upstream = await serve(async (req, res) => {
+      received = await body(req);
+      res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
     const address = await serve(gateway.handleRequest.bind(gateway));
@@ -348,8 +348,8 @@ describe('NetherNetGateway', () => {
 
   it('rebuilds join metadata and identity after replacing a request', async () => {
     const signed = await createSignedOffer('verified-token', 'verified-xuid');
-    const upstream = await serve((_request, response) => {
-      response.end('answer');
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
     });
     let verifications = 0;
     const gateway = new NetherNetGateway({
@@ -361,24 +361,24 @@ describe('NetherNetGateway', () => {
       },
     });
     const seen: Array<{ identity?: string; networkId: string; offer: string }> = [];
-    gateway.use('join', (context, next) => {
+    gateway.use('join', (c, next) => {
       seen.push({
-        identity: context.identity?.xuid,
-        networkId: context.networkId,
-        offer: context.offer,
+        identity: c.identity?.xuid,
+        networkId: c.networkId,
+        offer: c.offer,
       });
       return next(
-        new Request(new URL('/v1/join/replaced', context.request.url), {
+        new Request(new URL('/v1/join/replaced', c.req.url), {
           method: 'POST',
           body: signed.offer,
         }),
       );
     });
-    gateway.use('join', (context, next) => {
+    gateway.use('join', (c, next) => {
       seen.push({
-        identity: context.identity?.xuid,
-        networkId: context.networkId,
-        offer: context.offer,
+        identity: c.identity?.xuid,
+        networkId: c.networkId,
+        offer: c.offer,
       });
       return next();
     });
@@ -398,13 +398,13 @@ describe('NetherNetGateway', () => {
   });
 
   it('validates replacement offer size and UTF-8 encoding', async () => {
-    const upstream = await serve((_request, response) => {
-      response.end('answer');
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
     });
     const oversized = new NetherNetGateway({ upstream });
-    oversized.use('join', (context, next) =>
+    oversized.use('join', (c, next) =>
       next(
-        new Request(context.request, {
+        new Request(c.req, {
           method: 'POST',
           body: Buffer.alloc(1024 * 1024 + 1),
         }),
@@ -428,8 +428,8 @@ describe('NetherNetGateway', () => {
   });
 
   it('supports optional and required client identity modes', async () => {
-    const upstream = await serve((_request, response) => {
-      response.end('answer');
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
     });
     const optional = new NetherNetGateway({
       upstream,
@@ -465,9 +465,9 @@ describe('NetherNetGateway', () => {
 
   it('rejects failed token verification and oversized offers before proxying', async () => {
     let upstreamRequests = 0;
-    const upstream = await serve((_request, response) => {
+    const upstream = await serve((_req, res) => {
       upstreamRequests++;
-      response.end('answer');
+      res.end('answer');
     });
     const gateway = new NetherNetGateway({
       upstream,
@@ -476,7 +476,7 @@ describe('NetherNetGateway', () => {
       },
     });
     let middlewareRequests = 0;
-    gateway.use((_context, next) => {
+    gateway.use((_c, next) => {
       middlewareRequests++;
       return next();
     });
@@ -504,8 +504,8 @@ describe('NetherNetGateway', () => {
     const brokenMiddleware = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
     const middlewareErrors: NetherNetGatewayErrorEvent[] = [];
     brokenMiddleware.on('requestError', (event) => middlewareErrors.push(event));
-    brokenMiddleware.use((context, next) => {
-      if (context.url.searchParams.has('global-error')) throw new Error('global boom');
+    brokenMiddleware.use((c, next) => {
+      if (c.url.searchParams.has('global-error')) throw new Error('global boom');
       return next();
     });
     brokenMiddleware.use('info', () => {
@@ -549,11 +549,11 @@ describe('NetherNetGateway', () => {
   });
 
   it('rejects multiple next calls and can own its server lifecycle', async () => {
-    const upstream = await serve((_request, response) => {
-      response.end('ok');
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
     });
     const gateway = new NetherNetGateway({ upstream });
-    gateway.use('info', async (_context, next) => {
+    gateway.use('info', async (_c, next) => {
       await next();
       return next();
     });

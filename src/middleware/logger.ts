@@ -10,9 +10,9 @@ function colorStatus(status: number): string {
 }
 
 export function logger(print: LoggerPrint = console.log): GatewayMiddleware {
-  return async (context, next) => {
-    const { method } = context.request;
-    const path = context.url.pathname;
+  return async (c, next) => {
+    const { method } = c.req;
+    const path = c.url.pathname;
     print(`--> ${method} ${path}`);
     const started = performance.now();
     let status = 500;

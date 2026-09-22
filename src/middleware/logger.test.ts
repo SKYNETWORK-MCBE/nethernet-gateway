@@ -27,7 +27,7 @@ describe('logger', () => {
     const lines: string[] = [];
 
     await logger((line) => lines.push(line))(
-      { request: new Request('http://localhost/test'), url: new URL('http://localhost/test') },
+      { req: new Request('http://localhost/test'), url: new URL('http://localhost/test') },
       async () => new Response(null, { status }),
     );
 
@@ -41,7 +41,7 @@ describe('logger', () => {
     const lines: string[] = [];
 
     await logger((line) => lines.push(line))(
-      { request: new Request('http://localhost/test'), url: new URL('http://localhost/test') },
+      { req: new Request('http://localhost/test'), url: new URL('http://localhost/test') },
       async () => new Response(null, { status: 204 }),
     );
 
@@ -63,8 +63,8 @@ describe('logger', () => {
   });
 
   it('logs the join NetworkID', async () => {
-    const upstream = await serve((_request, response) => {
-      response.end('answer');
+    const upstream = await serve((_, res) => {
+      res.end('answer');
     });
     const lines: string[] = [];
     const gateway = new NetherNetGateway({ upstream });

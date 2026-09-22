@@ -30,7 +30,7 @@ export interface NetherNetGatewayErrorEvent {
 }
 
 export interface GatewayContext {
-  readonly request: Request;
+  readonly req: Request;
   readonly url: URL;
 }
 
@@ -43,9 +43,9 @@ export interface JoinContext extends GatewayContext {
 }
 
 /** A middleware can pass a replacement request to change the request sent downstream. */
-export type Next = (request?: Request) => Promise<Response>;
+export type Next = (req?: Request) => Promise<Response>;
 
 export type GatewayMiddleware<CTX extends GatewayContext = GatewayContext> = (
-  context: CTX,
+  c: CTX,
   next: Next,
 ) => Awaitable<Response>;

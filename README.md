@@ -31,14 +31,14 @@ Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
 ## Middleware
 
-Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Every middleware receives its own request clone and parsed URL, so reading the body or changing `context.url` does not affect later middleware. Changes to `context.request.headers` are carried forward when `next()` is called. Pass a replacement `Request` to `next()` to change the downstream method, URL, or body and routing.
+Calling `use()` with a middleware applies it to every request before routing. It can return its own response or call `next()` to wrap the downstream response. Every middleware receives its own request clone and parsed URL, so reading the body or changing `c.url` does not affect later middleware. Changes to `c.req.headers` are carried forward when `next()` is called. Pass a replacement `Request` to `next()` to change the downstream method, URL, or body and routing.
 
 ```ts
-gateway.use(async (context, next) => {
-  if (context.url.pathname === '/health') return new Response('OK');
+gateway.use(async (c, next) => {
+  if (c.url.pathname === '/health') return new Response('OK');
 
   const response = await next();
-  console.log(context.request.method, response.status);
+  console.log(c.req.method, response.status);
   return response;
 });
 ```
@@ -54,7 +54,7 @@ const gateway = new NetherNetGateway({
   upstream: 'http://127.0.0.1:19132',
 });
 
-gateway.use('info', async (_context, next) => {
+gateway.use('info', async (_c, next) => {
   const response = await next(); // retrieve the upstream server info
   const info = (await response.json()) as NetherNetServerInfo;
 
@@ -67,7 +67,7 @@ gateway.use('info', async (_context, next) => {
 
 ### Verify client identity
 
-`verifyClientToken` must verify the `GameServerToken` issuer before returning an identity. The gateway then verifies that the token's `cpk` signed the SDP fingerprints. `context.identity` is exposed only after both checks succeed.
+`verifyClientToken` must verify the `GameServerToken` issuer before returning an identity. The gateway then verifies that the token's `cpk` signed the SDP fingerprints. `c.identity` is exposed only after both checks succeed.
 
 Install `jose` in the application that performs JWT verification:
 
@@ -113,13 +113,13 @@ When a verifier is configured but an offer has no identity assertion, the join r
 
 ### Authorize joins by XUID
 
-Use a join middleware to reject known XUIDs at signaling time. This uses the verified `context.identity` from the previous example:
+Use a join middleware to reject known XUIDs at signaling time. This uses the verified `c.identity` from the previous example:
 
 ```ts
 const bannedXuids = new Set(['2533274790000000']);
 
-gateway.use('join', (context, next) => {
-  if (context.identity && bannedXuids.has(context.identity.xuid)) {
+gateway.use('join', (c, next) => {
+  if (c.identity && bannedXuids.has(c.identity.xuid)) {
     return new Response('Banned', { status: 403 });
   }
 
@@ -152,9 +152,9 @@ const gateway = new NetherNetGateway({
   upstream: 'http://127.0.0.1:19132',
 });
 
-gateway.use('join', async (context, next) => {
-  const offer = stripOfferCandidates(context.offer);
-  const response = await next(new Request(context.request, { method: 'POST', body: offer }));
+gateway.use('join', async (c, next) => {
+  const offer = stripOfferCandidates(c.offer);
+  const response = await next(new Request(c.req, { method: 'POST', body: offer }));
   const answer = rewriteAnswerCandidates(await response.text(), '203.0.113.10');
 
   return new Response(answer, response);

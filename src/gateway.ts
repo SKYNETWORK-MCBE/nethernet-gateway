@@ -81,7 +81,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     } else {
       try {
         const request = await createRequest(incoming);
-        const context: GatewayContext = { request, url: new URL(request.url) };
+        const context: GatewayContext = { req: request, url: new URL(request.url) };
 
         try {
           result = await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
@@ -160,15 +160,15 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   }
 
   private async dispatch(requestContext: GatewayContext): Promise<Response> {
-    const { request } = requestContext;
-    const url = new URL(request.url);
-    const context = { request, url };
+    const { req } = requestContext;
+    const url = new URL(req.url);
+    const context = { req, url };
 
-    if (request.method === 'GET' && url.pathname === '/v1/join') {
+    if (req.method === 'GET' && url.pathname === '/v1/join') {
       return this.middleware(this.infoMiddlewares, context);
     }
 
-    const joinContext = await this.createJoinContext(request);
+    const joinContext = await this.createJoinContext(req);
     if (joinContext instanceof Response) return joinContext;
     return this.middleware(this.joinMiddlewares, joinContext, async (_context, replacement) => {
       // A replacement can change every field derived from the request, including verified identity.
@@ -216,7 +216,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     const identity = await this.identity(offer);
     if (identity instanceof Response) return identity;
 
-    return { request, url, networkId, offer, identity };
+    return { req: request, url, networkId, offer, identity };
   }
 
   private async identity(offer: string): Promise<NetherNetIdentity | undefined | Response> {
@@ -264,11 +264,11 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       return await runMiddleware(
         middleware,
         context,
-        ({ request }) => this.proxy(request.clone()),
+        ({ req }) => this.proxy(req.clone()),
         replace,
       );
     } catch (error) {
-      this.emitRequestError('middleware', error, context.request.method, context.request.url);
+      this.emitRequestError('middleware', error, context.req.method, context.req.url);
       return new Response('Internal Server Error', { status: 500 });
     }
   }
@@ -294,7 +294,7 @@ function requestTarget(value: string): string {
 
 type ReplaceContext<CTX extends GatewayContext> = (
   context: CTX,
-  request: Request,
+  req: Request,
 ) => Promise<CTX | Response>;
 
 async function runMiddleware<CTX extends GatewayContext>(
@@ -314,13 +314,13 @@ async function runMiddleware<CTX extends GatewayContext>(
 
     const localContext = {
       ...context,
-      request: context.request.clone(),
-      url: new URL(context.request.url),
+      req: context.req.clone(),
+      url: new URL(context.req.url),
     };
     const response = await current(localContext, async (override) => {
       if (!override) {
         // Headers are Request's only mutable state, so carry them forward without sharing its body.
-        replaceHeaders(context.request.headers, localContext.request.headers);
+        replaceHeaders(context.req.headers, localContext.req.headers);
         return dispatch(index + 1, context);
       }
       const replaced = await replace(context, override);
@@ -345,7 +345,7 @@ function replaceHeaders(target: Headers, source: Headers): void {
 
 async function replaceRequest<CTX extends GatewayContext>(
   context: CTX,
-  request: Request,
+  req: Request,
 ): Promise<CTX> {
-  return { ...context, request, url: new URL(request.url) };
+  return { ...context, req, url: new URL(req.url) };
 }

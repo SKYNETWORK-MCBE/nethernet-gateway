@@ -15,10 +15,15 @@ export function logger(print: LoggerPrint = console.log): GatewayMiddleware {
     const path = context.url.pathname;
     print(`--> ${method} ${path}`);
     const started = performance.now();
-    const response = await next();
-    print(
-      `<-- ${method} ${path} ${colorStatus(response.status)} ${Math.round(performance.now() - started)}ms`,
-    );
-    return response;
+    let status = 500;
+    try {
+      const response = await next();
+      status = response.status;
+      return response;
+    } finally {
+      print(
+        `<-- ${method} ${path} ${colorStatus(status)} ${Math.round(performance.now() - started)}ms`,
+      );
+    }
   };
 }

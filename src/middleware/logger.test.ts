@@ -1,10 +1,10 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
 import { NetherNetGateway } from '../gateway';
+import { createTestServers } from '../test-server';
 import { logger } from './logger';
 import type { NetherNetGatewayErrorEvent } from '../types';
 
-const servers: Server[] = [];
+const { serve, closeAll } = createTestServers();
 const originalNoColor = process.env.NO_COLOR;
 
 beforeEach(() => {
@@ -14,7 +14,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (originalNoColor === undefined) delete process.env.NO_COLOR;
   else process.env.NO_COLOR = originalNoColor;
-  await Promise.all(servers.splice(0).map(closeServer));
+  await closeAll();
 });
 
 describe('logger', () => {
@@ -83,6 +83,22 @@ describe('logger', () => {
     );
   });
 
+  it('logs a 500 response when downstream middleware fails', async () => {
+    const lines: string[] = [];
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    gateway.use(logger((line) => lines.push(line)));
+    gateway.use(() => {
+      throw new Error('middleware failed');
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const response = await fetch(`${address}/missing`);
+
+    expect(response.status).toBe(500);
+    expect(lines[0]).toBe('--> GET /missing');
+    expect(lines[1].replace('\x1b[31m500\x1b[0m', '500')).toMatch(/^<-- GET \/missing 500 \d+ms$/u);
+  });
+
   it('handles print failures as middleware errors', async () => {
     const errors: NetherNetGatewayErrorEvent[] = [];
     const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
@@ -103,24 +119,3 @@ describe('logger', () => {
     ]);
   });
 });
-
-async function serve(
-  handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>,
-): Promise<string> {
-  const server = createServer(handler);
-  servers.push(server);
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve());
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Missing test server address');
-  return `http://127.0.0.1:${address.port}`;
-}
-
-async function closeServer(server: Server): Promise<void> {
-  if (!server.listening) return;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-}

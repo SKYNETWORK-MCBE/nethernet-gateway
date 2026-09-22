@@ -9,7 +9,12 @@ import { exportJWK, FlattenedSign, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { NetherNetGateway } from './gateway';
 import { createTestServers } from './test-server';
-import type { NetherNetGatewayErrorEvent, NetherNetIdentity, NetherNetServerInfo } from './types';
+import type {
+  JoinContext,
+  NetherNetGatewayErrorEvent,
+  NetherNetIdentity,
+  NetherNetServerInfo,
+} from './types';
 
 const { servers, serve, closeServer, closeAll } = createTestServers();
 
@@ -156,12 +161,13 @@ describe('NetherNetGateway', () => {
       return next();
     });
     const address = await serve(gateway.handleRequest.bind(gateway));
+    const offer = untrustedOffer('offer');
 
-    const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: 'offer' });
+    const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
 
     expect(response.status).toBe(200);
-    expect(seen).toEqual(['offer', 'offer']);
-    expect(received).toBe('offer');
+    expect(seen).toEqual([offer, offer]);
+    expect(received).toBe(offer);
   });
 
   it('carries mutable request headers through global and join middleware', async () => {
@@ -187,18 +193,19 @@ describe('NetherNetGateway', () => {
       return next();
     });
     const address = await serve(gateway.handleRequest.bind(gateway));
+    const offer = untrustedOffer('offer');
 
     const response = await sendHttp(address, '/v1/join/1', {
       method: 'POST',
       headers: { 'set-cookie': ['s=1', 't=2'], 'x-remove': 'remove' },
-      body: 'offer',
+      body: offer,
     });
 
     expect(response.status).toBe(200);
     expect(received?.['x-global']).toBe('global');
     expect(received?.['x-join']).toBe('join');
     expect(received?.['x-remove']).toBeUndefined();
-    expect(received?.['content-length']).toBe('5');
+    expect(received?.['content-length']).toBe(String(Buffer.byteLength(offer)));
     expect(received?.['transfer-encoding']).toBeUndefined();
     expect(cookies).toEqual(['s=1', 't=2']);
   });
@@ -298,7 +305,7 @@ describe('NetherNetGateway', () => {
     ]);
   });
 
-  it('proxies join metadata and SDP without requiring identity by default', async () => {
+  it('proxies join metadata and SDP with an untrusted identity', async () => {
     let received: { method?: string; url?: string; header?: string; body?: string } = {};
     const upstream = await serve(async (req, res) => {
       received = {
@@ -315,16 +322,17 @@ describe('NetherNetGateway', () => {
     gateway.use('join', (c, next) => {
       expect(c.networkId).toBe('network id');
       expect(c.url.searchParams.get('source')).toBe('test');
-      expect(c.offer).toBe('offer');
+      expect(c.offer).toBe(offer);
       contextIdentity = c.identity;
       return next();
     });
 
     const address = await serve(gateway.handleRequest.bind(gateway));
+    const offer = untrustedOffer('offer');
     const response = await fetch(`${address}/v1/join/network%20id?source=test`, {
       method: 'POST',
       headers: { 'content-type': 'application/sdp', 'x-test': 'kept' },
-      body: 'offer',
+      body: offer,
     });
 
     expect(await response.text()).toBe('answer');
@@ -333,7 +341,39 @@ describe('NetherNetGateway', () => {
       method: 'POST',
       url: '/v1/join/network%20id?source=test',
       header: 'kept',
-      body: 'offer',
+      body: offer,
+    });
+  });
+
+  it('exposes untrusted identity claims without configuring a verifier', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    let context: JoinContext | undefined;
+    gateway.use('join', (c, next) => {
+      context = c;
+      return next();
+    });
+    const claims = {
+      xid: '0000000000000000',
+      mid: '0000000000000000',
+      xname: 'Player',
+    };
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    const response = await fetch(`${address}/v1/join/1`, {
+      method: 'POST',
+      body: offerWithIdentityAssertion(unsignedToken(claims)),
+    });
+
+    expect(response.status).toBe(200);
+    expect(context?.identity).toBeUndefined();
+    expect(context?.untrustedIdentity).toEqual({
+      xuid: claims.xid,
+      playFabId: claims.mid,
+      gamertag: claims.xname,
+      claims,
     });
   });
 
@@ -345,21 +385,22 @@ describe('NetherNetGateway', () => {
       res.end('a long upstream answer');
     });
     const gateway = new NetherNetGateway({ upstream });
+    const offer = untrustedOffer('offer');
     gateway.use('join', async (c, next) => {
       const replaced = new Request(c.req, {
         method: 'POST',
         body: `rewritten ${c.offer}`,
       });
       const response = await next(replaced);
-      expect(await replaced.text()).toBe('rewritten offer');
+      expect(await replaced.text()).toBe(`rewritten ${offer}`);
 
       return new Response((await response.text()).slice(0, 6), response);
     });
 
     const address = await serve(gateway.handleRequest.bind(gateway));
-    const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: 'offer' });
+    const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
 
-    expect(received).toBe('rewritten offer');
+    expect(received).toBe(`rewritten ${offer}`);
     expect(await response.text()).toBe('a long');
     expect(response.headers.get('content-type')).toBe('application/sdp');
   });
@@ -371,6 +412,7 @@ describe('NetherNetGateway', () => {
       res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
+    const offer = untrustedOffer('offer');
     const seen: { offer: string; body: string }[] = [];
 
     gateway.use('join', (c, next) =>
@@ -382,10 +424,10 @@ describe('NetherNetGateway', () => {
     });
 
     const address = await serve(gateway.handleRequest.bind(gateway));
-    await fetch(`${address}/v1/join/1`, { method: 'POST', body: 'offer' });
+    await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
 
-    expect(seen).toEqual([{ offer: 'rewritten offer', body: 'rewritten offer' }]);
-    expect(received).toBe('rewritten offer');
+    expect(seen).toEqual([{ offer: `rewritten ${offer}`, body: `rewritten ${offer}` }]);
+    expect(received).toBe(`rewritten ${offer}`);
   });
 
   it('preserves a UTF-8 BOM in the offer sent upstream', async () => {
@@ -396,7 +438,7 @@ describe('NetherNetGateway', () => {
     });
     const gateway = new NetherNetGateway({ upstream });
     const address = await serve(gateway.handleRequest.bind(gateway));
-    const offer = '\uFEFFv=0\r\n';
+    const offer = `\uFEFF${untrustedOffer()}`;
 
     const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
 
@@ -405,15 +447,20 @@ describe('NetherNetGateway', () => {
   });
 
   it('rebuilds join metadata and identity after replacing a request', async () => {
-    const signed = await createSignedOffer('verified-token', 'verified-xuid');
+    const token = unsignedToken({
+      xid: 'verified-xuid',
+      mid: '0000000000000000',
+      xname: 'Player',
+    });
+    const signed = await createSignedOffer(token, 'verified-xuid');
     const upstream = await serve((_req, res) => {
       res.end('answer');
     });
     let verifications = 0;
     const gateway = new NetherNetGateway({
       upstream,
-      verifyClientToken: (token) => {
-        expect(token).toBe('verified-token');
+      verifyClientToken: (receivedToken) => {
+        expect(receivedToken).toBe(token);
         verifications++;
         return signed.identity;
       },
@@ -474,7 +521,7 @@ describe('NetherNetGateway', () => {
 
     const oversizedResponse = await fetch(`${oversizedAddress}/v1/join/1`, {
       method: 'POST',
-      body: 'offer',
+      body: untrustedOffer('offer'),
     });
     const invalidUtf8Response = await fetch(`${invalidUtf8Address}/v1/join/1`, {
       method: 'POST',
@@ -485,40 +532,29 @@ describe('NetherNetGateway', () => {
     expect(invalidUtf8Response.status).toBe(400);
   });
 
-  it('supports optional and required client identity modes', async () => {
+  it('requires a structurally valid client identity', async () => {
     const upstream = await serve((_req, res) => {
       res.end('answer');
     });
-    const optional = new NetherNetGateway({
-      upstream,
-      verifyClientToken: () => {
-        throw new Error('not called without an assertion');
-      },
-    });
-    const required = new NetherNetGateway({
-      upstream,
-      requireClientIdentity: true,
-      verifyClientToken: () => {
-        throw new Error('not called without an assertion');
-      },
-    });
-    const optionalAddress = await serve(optional.handleRequest.bind(optional));
-    const requiredAddress = await serve(required.handleRequest.bind(required));
+    const gateway = new NetherNetGateway({ upstream });
+    const address = await serve(gateway.handleRequest.bind(gateway));
 
-    const optionalResponse = await fetch(`${optionalAddress}/v1/join/1`, {
+    const missing = await fetch(`${address}/v1/join/1`, {
       method: 'POST',
       body: 'v=0\r\n',
     });
-    const requiredResponse = await fetch(`${requiredAddress}/v1/join/1`, {
+    const malformed = await fetch(`${address}/v1/join/1`, {
       method: 'POST',
-      body: 'v=0\r\n',
+      body: offerWithIdentityAssertion('invalid-token'),
+    });
+    const valid = await fetch(`${address}/v1/join/1`, {
+      method: 'POST',
+      body: untrustedOffer(),
     });
 
-    expect(optionalResponse.status).toBe(200);
-    expect(requiredResponse.status).toBe(401);
-    expect(() => new NetherNetGateway({ upstream, requireClientIdentity: true })).toThrow(
-      /verifyClientToken/u,
-    );
+    expect(missing.status).toBe(401);
+    expect(malformed.status).toBe(401);
+    expect(valid.status).toBe(200);
   });
 
   it('rejects failed token verification and oversized offers before proxying', async () => {
@@ -544,7 +580,7 @@ describe('NetherNetGateway', () => {
 
     const invalidToken = await fetch(`${address}/v1/join/1`, {
       method: 'POST',
-      body: offerWithIdentityAssertion('invalid-token'),
+      body: untrustedOffer(),
     });
     const oversized = await fetch(`${address}/v1/join/2`, {
       method: 'POST',
@@ -660,6 +696,19 @@ function offerWithIdentityAssertion(token: string): string {
   ].join('\r\n');
 }
 
+function untrustedOffer(content = 'v=0'): string {
+  const token = unsignedToken({
+    xid: '0000000000000000',
+    mid: '0000000000000000',
+    xname: 'Player',
+  });
+  return [content, offerWithIdentityAssertion(token)].join('\r\n');
+}
+
+function unsignedToken(claims: Readonly<Record<string, unknown>>): string {
+  return ['e30', Buffer.from(JSON.stringify(claims)).toString('base64url'), 'signature'].join('.');
+}
+
 async function createSignedOffer(
   token: string,
   xuid: string,
@@ -681,7 +730,13 @@ async function createSignedOffer(
   };
 
   return {
-    identity: { xuid, cpk, claims: { cpk, xid: xuid } },
+    identity: {
+      xuid,
+      playFabId: '0000000000000000',
+      gamertag: 'Player',
+      cpk,
+      claims: { cpk, xid: xuid, mid: '0000000000000000', xname: 'Player' },
+    },
     offer: [
       'v=0',
       `a=fingerprint:${fingerprint.algorithm} ${fingerprint.digest}`,

@@ -19,6 +19,7 @@
   "type": "module",
   "exports": {
     ".": "./dist/index.mjs",
+    "./minecraft": "./dist/minecraft/index.mjs",
     "./package.json": "./package.json"
   },
   "scripts": {

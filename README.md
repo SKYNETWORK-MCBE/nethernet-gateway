@@ -10,7 +10,15 @@ A middleware-first proxy for Minecraft NetherNet HTTP signaling.
 ## Installation
 
 ```sh
+npm install nethernet-gateway
+```
+
+```sh
 pnpm add nethernet-gateway
+```
+
+```sh
+bun add nethernet-gateway
 ```
 
 ## Proxy a NetherNet server

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import type { Awaitable, GatewayContext, GatewayMiddleware } from '../types';
 
 export type RateLimitKey<CTX extends GatewayContext = GatewayContext> =
@@ -143,13 +144,40 @@ async function resolveKey<CTX extends GatewayContext>(
   context: CTX,
 ): Promise<string | undefined> {
   if (key === 'global') return '';
-  if (key === 'ip') return context.remoteAddress ?? '';
+  if (key === 'ip') return ipBucketKey(context.remoteAddress);
 
   const value = await key(context);
   if (value !== undefined && typeof value !== 'string') {
     throw new TypeError('A rate-limit key function must return a string or undefined');
   }
   return value;
+}
+
+function ipBucketKey(address: string | undefined): string {
+  if (!address || isIP(address) !== 6) return address ?? '';
+
+  const [host, zone] = address.split('%', 2);
+  const canonical = new URL(`http://[${host}]/`).hostname.slice(1, -1);
+  const [left, right = ''] = canonical.split('::');
+  const head = left ? left.split(':') : [];
+  const tail = right ? right.split(':') : [];
+  const groups = [
+    ...head,
+    ...Array.from({ length: 8 - head.length - tail.length }, () => '0'),
+    ...tail,
+  ].map((group) => Number.parseInt(group, 16));
+
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+    const high = groups[6];
+    const low = groups[7];
+    return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
+  }
+
+  const prefix = groups
+    .slice(0, 4)
+    .map((group) => group.toString(16))
+    .join(':');
+  return `ipv6:${prefix}${zone ? `%${zone}` : ''}`;
 }
 
 function state(entry: RateLimitEntry, limit: number, windowMs: number): RateLimitState {

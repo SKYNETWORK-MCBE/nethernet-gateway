@@ -91,6 +91,31 @@ describe('rateLimit', () => {
     expect((await middleware(context('192.0.2.1'), next)).status).toBe(429);
   });
 
+  it('shares an IPv6 counter within a /64 but not across /64s', async () => {
+    const middleware = rateLimit({
+      windowMs: 60_000,
+      rules: [rateLimit.ip(1)],
+    });
+    const next = async () => new Response('OK');
+
+    expect((await middleware(context('2001:db8:1:2::1'), next)).status).toBe(200);
+    expect((await middleware(context('2001:0DB8:0001:0002:abcd::1'), next)).status).toBe(429);
+    expect((await middleware(context('2001:db8:1:3::1'), next)).status).toBe(200);
+  });
+
+  it('uses the IPv4 counter for IPv4-mapped IPv6 addresses', async () => {
+    const middleware = rateLimit({
+      windowMs: 60_000,
+      rules: [rateLimit.ip(1)],
+    });
+    const next = async () => new Response('OK');
+
+    expect((await middleware(context('192.0.2.1'), next)).status).toBe(200);
+    expect((await middleware(context('::ffff:192.0.2.1'), next)).status).toBe(429);
+    expect((await middleware(context('::ffff:c000:201'), next)).status).toBe(429);
+    expect((await middleware(context('192.0.2.2'), next)).status).toBe(200);
+  });
+
   it('applies a global limit across peer addresses', async () => {
     const middleware = rateLimit({
       windowMs: 60_000,

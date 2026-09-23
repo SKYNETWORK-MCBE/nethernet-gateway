@@ -79,10 +79,11 @@ gateway.use(
 );
 ```
 
-The built-in `ip` key limits each direct TCP peer independently, while `global` protects the BDS
-port pool from the total request rate. With this request-wide mounting, server information requests
-and unknown paths also consume capacity. A request must have capacity under every applicable rule
-before it reaches BDS.
+The built-in `ip` key limits each direct TCP peer by IPv4 address or IPv6 `/64` prefix. IPv4-mapped
+IPv6 addresses share the corresponding IPv4 counter. Peers within the same IPv6 `/64` share a
+counter. The `global` key protects the BDS port pool from the total request rate. With this
+request-wide mounting, server information requests and unknown paths also consume capacity. A
+request must have capacity under every applicable rule before it reaches BDS.
 
 Responses that pass through the limiter include `RateLimit-Limit`, `RateLimit-Remaining`, and
 `RateLimit-Reset` headers. `RateLimit-Reset` is the number of seconds until the reported rule resets.

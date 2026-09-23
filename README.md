@@ -63,15 +63,15 @@ gateway.use(async (c, next) => {
 ### Rate limit requests
 
 Every join request that reaches BDS may reserve a UDP port. An attacker can exhaust the configured
-port range by repeatedly requesting offers, so apply `rateLimit` to the join middleware stack. The
-limiter uses a sliding window and can apply multiple limits to each request.
+port range by repeatedly requesting offers, so apply `rateLimit` to the request middleware stack
+before routing and identity verification. The limiter uses a sliding window and can apply multiple
+limits to each request.
 
 ```ts
-import { NetherNetGateway, rateLimit, type JoinContext } from 'nethernet-gateway';
+import { NetherNetGateway, rateLimit } from 'nethernet-gateway';
 
 const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:19132' });
 gateway.use(
-  'join',
   rateLimit({
     windowMs: 60_000,
     rules: [rateLimit.ip(3), rateLimit.global(50)],
@@ -80,17 +80,32 @@ gateway.use(
 ```
 
 The built-in `ip` key limits each direct TCP peer independently, while `global` protects the BDS
-port pool from the total request rate. A request must have capacity under every applicable rule
+port pool from the total request rate. With this request-wide mounting, server information requests
+and unknown paths also consume capacity. A request must have capacity under every applicable rule
 before it reaches BDS.
 
+Responses that pass through the limiter include `RateLimit-Limit`, `RateLimit-Remaining`, and
+`RateLimit-Reset` headers. `RateLimit-Reset` is the number of seconds until the reported rule resets.
+When a limit is exceeded, the middleware returns `429 Too Many Requests` with the body
+`Too Many Requests` and a `Retry-After` header in seconds. With multiple rules, the headers report
+one applicable rule, not a separate set of values for each rule.
+
 Use a key function to limit by any other value. Returning `undefined` skips that rule for the
-request. For example, a join middleware can limit verified players by XUID:
+request. For example, a join middleware can limit verified players by XUID. Configure
+`verifyClientToken` to authenticate the token first; `c.identity` is only available after successful
+verification. Set `requireClientIdentity: true` if every join request must have a verified identity,
+otherwise requests without one skip this XUID rule:
 
 ```ts
-rateLimit<JoinContext>({
-  windowMs: 60_000,
-  rules: [rateLimit.custom<JoinContext>(2, (c) => c.identity?.xuid)],
-});
+import { type JoinContext } from 'nethernet-gateway';
+
+gateway.use(
+  'join',
+  rateLimit<JoinContext>({
+    windowMs: 60_000,
+    rules: [rateLimit.custom<JoinContext>(2, (c) => c.identity?.xuid)],
+  }),
+);
 ```
 
 The helpers return ordinary rule objects, so helpers and manually defined rules can be combined.

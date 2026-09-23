@@ -61,6 +61,29 @@ describe('rateLimit', () => {
     expect(reset.headers.get('ratelimit-remaining')).toBe('0');
   });
 
+  it('reports the next available slot rather than a full quota reset', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    const middleware = rateLimit({
+      windowMs: 60_000,
+      rules: [rateLimit.ip(2)],
+    });
+    const next = async () => new Response('OK');
+
+    expect((await middleware(context(), next)).headers.get('ratelimit-reset')).toBe('60');
+    now.mockReturnValue(2_000);
+    const second = await middleware(context(), next);
+    expect(second.headers.get('ratelimit-remaining')).toBe('0');
+    expect(second.headers.get('ratelimit-reset')).toBe('59');
+    const blocked = await middleware(context(), next);
+    expect(blocked.headers.get('retry-after')).toBe('59');
+
+    now.mockReturnValue(61_000);
+    const renewed = await middleware(context(), next);
+    expect(renewed.status).toBe(200);
+    expect(renewed.headers.get('ratelimit-remaining')).toBe('0');
+    expect(renewed.headers.get('ratelimit-reset')).toBe('1');
+  });
+
   it('does not allow a fixed-window burst at a boundary', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
     const middleware = rateLimit({

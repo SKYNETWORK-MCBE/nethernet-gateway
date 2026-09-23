@@ -86,10 +86,12 @@ request-wide mounting, server information requests and unknown paths also consum
 request must have capacity under every applicable rule before it reaches BDS.
 
 Responses that pass through the limiter include `RateLimit-Limit`, `RateLimit-Remaining`, and
-`RateLimit-Reset` headers. `RateLimit-Reset` is the number of seconds until the reported rule resets.
-When a limit is exceeded, the middleware returns `429 Too Many Requests` with the body
-`Too Many Requests` and a `Retry-After` header in seconds. With multiple rules, the headers report
-one applicable rule, not a separate set of values for each rule.
+`RateLimit-Reset` headers. `RateLimit-Reset` is the number of seconds until the oldest counted
+request for the reported rule expires. With a sliding window, this restores one request slot, not
+necessarily the entire quota. When a limit is exceeded, the middleware returns
+`429 Too Many Requests` with the body `Too Many Requests` and a `Retry-After` header in seconds.
+With multiple rules, the headers report one applicable rule, not a separate set of values for each
+rule. On a 429 response, `Retry-After` is the time until all blocking rules have at least one slot.
 
 Use a key function to limit by any other value. Returning `undefined` skips that rule for the
 request. For example, a join middleware can limit verified players by XUID. Configure

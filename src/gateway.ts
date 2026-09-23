@@ -166,7 +166,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   private async dispatch(requestContext: GatewayContext): Promise<Response> {
     const { req } = requestContext;
     const url = new URL(req.url);
-    const context = { req, url };
+    const context: GatewayContext = { ...requestContext, req, url };
 
     if (req.method === 'GET' && url.pathname === '/v1/join') {
       return this.middleware(this.infoMiddlewares, context);
@@ -323,7 +323,7 @@ async function runMiddleware<CTX extends GatewayContext>(
     const current = middleware[index];
     if (!current) return terminal(context);
 
-    const localContext = {
+    const localContext: CTX = {
       ...context,
       req: context.req.clone(),
       url: new URL(context.req.url),

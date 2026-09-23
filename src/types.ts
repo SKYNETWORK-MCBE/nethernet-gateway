@@ -33,7 +33,7 @@ export interface GatewayContext {
   readonly req: Request;
   readonly url: URL;
   /** The direct peer address. Use a custom key generator when running behind a trusted proxy. */
-  readonly remoteAddress?: string;
+  readonly remoteAddress: string | undefined;
 }
 
 export interface ServerInfoContext extends GatewayContext {}

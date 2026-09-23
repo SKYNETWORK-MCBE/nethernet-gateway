@@ -169,4 +169,29 @@ describe('rateLimit', () => {
     expect((await fetch(`${address}/missing`)).status).toBe(404);
     expect((await fetch(`${address}/missing`)).status).toBe(429);
   });
+
+  it('passes the gateway connection address to info and join middleware', async () => {
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    const seen: string[] = [];
+    gateway.use('info', (c) => {
+      seen.push(c.remoteAddress ?? 'undefined');
+      return new Response('OK');
+    });
+    gateway.use('join', (c) => {
+      seen.push(c.remoteAddress ?? 'undefined');
+      return new Response('OK');
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    expect((await fetch(`${address}/v1/join`)).status).toBe(200);
+    expect(
+      (
+        await fetch(`${address}/v1/join/network`, {
+          method: 'POST',
+          body: 'offer',
+        })
+      ).status,
+    ).toBe(200);
+    expect(seen).toEqual(['127.0.0.1', '127.0.0.1']);
+  });
 });

@@ -1,5 +1,5 @@
 {
-  "include": ["src"],
+  "include": ["src", "example.ts"],
   "compilerOptions": {
     "moduleResolution": "bundler",
     "types": ["node"]

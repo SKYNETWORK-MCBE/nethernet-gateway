@@ -15,7 +15,7 @@ pnpm add nethernet-gateway
 
 ## Proxy a NetherNet server
 
-Client identity verification is optional by default.
+Every join offer must include a structurally valid client identity assertion. Cryptographic verification against a trusted token issuer is opt-in.
 
 ```ts
 import { NetherNetGateway } from 'nethernet-gateway';
@@ -170,58 +170,49 @@ gateway.use('info', async (_c, next) => {
 });
 ```
 
-### Verify client identity
+### Read untrusted client identity
 
-`verifyClientToken` must verify the `GameServerToken` issuer before returning an identity. The gateway then verifies that the token's `cpk` signed the SDP fingerprints. `c.identity` is exposed only after both checks succeed.
-
-Install `jose` in the application that performs JWT verification:
-
-```sh
-pnpm add jose
-```
+Every join offer must contain a structurally valid Minecraft identity token. The gateway decodes its XUID and PlayFab ID without requiring a verifier. These values are supplied by the client and have not been authenticated, so use them only for diagnostics, display, or other non-security-sensitive purposes.
 
 ```ts
-import { createRemoteJWKSet, jwtVerify, type JWK } from 'jose';
-import { NetherNetGateway } from 'nethernet-gateway';
+gateway.use('join', (c, next) => {
+  console.log(c.untrustedIdentity.xuid);
+  console.log(c.untrustedIdentity.playFabId);
+  console.log(c.untrustedIdentity.gamertag);
+  return next();
+});
+```
 
-const minecraftKeys = createRemoteJWKSet(new URL(process.env.MINECRAFT_JWKS_URL!));
+Missing or malformed identity assertions are rejected with `401`. Structural validation covers the SDP identity envelope, compact JWT shape, and the `xid`, `mid`, and `xname` claims. It does not validate the JWT signature, issuer, audience, timestamps, or public key. Never use `untrustedIdentity` for bans, allowlists, permissions, or other authorization decisions.
+
+Without `verifyClientToken`, `c.identity` remains undefined and the structurally valid offer is forwarded using only `untrustedIdentity`.
+
+### Verify client identity
+
+`verifyClientToken` authenticates the `GameServerToken` and returns a normalized `NetherNetIdentity`. The gateway trusts that return value, then uses its `cpk` to verify the signature over the SDP fingerprints. `c.identity` is exposed only after both steps succeed. The built-in verifier trusts Minecraft's current authorization service and fetches its JWKS lazily when the first assertion arrives.
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { createMinecraftClientTokenVerifier } from 'nethernet-gateway/minecraft';
 
 const gateway = new NetherNetGateway({
   upstream: 'http://127.0.0.1:19132',
-
-  async verifyClientToken(token) {
-    const { payload } = await jwtVerify(token, minecraftKeys, {
-      issuer: process.env.MINECRAFT_TOKEN_ISSUER,
-      audience: process.env.MINECRAFT_TOKEN_AUDIENCE,
-    });
-
-    if (typeof payload.xid !== 'string' || !isJwk(payload.cpk)) {
-      throw new Error('Invalid GameServerToken');
-    }
-
-    return {
-      xuid: payload.xid,
-      cpk: payload.cpk,
-      claims: payload,
-    };
-  },
+  verifyClientToken: createMinecraftClientTokenVerifier(),
 });
-
-function isJwk(value: unknown): value is JWK {
-  return typeof value === 'object' && value !== null && 'kty' in value;
-}
 ```
 
-The JWKS URL, issuer, audience, and claim validation depend on the authentication service you trust. They are intentionally not guessed by this package.
+The verifier requires `exp` and `iat`, validates Minecraft's issuer, audience, RS256 signature, expiration and any not-before timestamp, identity claims, and client public key. It maps `xid` to `xuid`, `mid` to `playFabId`, and `xname` to `gamertag`, and accepts both observed `cpk` formats: a JWK object and a Base64-encoded DER SubjectPublicKeyInfo value.
 
-When a verifier is configured but an offer has no identity assertion, the join remains anonymous. An assertion that is present but invalid is always rejected with `401`.
+To trust another compatible authentication service or apply additional policy, provide your own `verifyClientToken` callback. The callback is responsible for validating the token and returning a complete `NetherNetIdentity` containing `xuid`, `playFabId`, `gamertag`, `cpk`, and `claims`; the gateway does not validate the callback's return shape. Tokens must still carry the `xid`, `mid`, and `xname` claims required for `untrustedIdentity`.
+
+When a verifier is configured, its JWT verification and the SDP fingerprint binding must also succeed. Failures are rejected with `401`.
 
 ### Authorize joins by XUID
 
 Use a join middleware to reject known XUIDs at signaling time. This uses the verified `c.identity` from the previous example:
 
 ```ts
-const bannedXuids = new Set(['2533274790000000']);
+const bannedXuids = new Set(['0000000000000000']);
 
 gateway.use('join', (c, next) => {
   if (c.identity && bannedXuids.has(c.identity.xuid)) {
@@ -233,18 +224,6 @@ gateway.use('join', (c, next) => {
 ```
 
 Treat this as an early rejection only; repeat the authoritative BAN check after game login using the authenticated player identity. NetherNet signaling is only involved in the initial SDP exchange ([Mojang guide, §3](https://mojang.github.io/bedrock-protocol-docs/guides/nether-net-onboarding-guide/#3-architecture-overview)).
-
-### Require client identity
-
-Set `requireClientIdentity` to reject offers without an identity assertion. This option requires `verifyClientToken`.
-
-```ts
-const gateway = new NetherNetGateway({
-  upstream: 'http://127.0.0.1:19132',
-  verifyClientToken,
-  requireClientIdentity: true,
-});
-```
 
 ### Rewrite ICE candidates
 
@@ -318,8 +297,8 @@ gateway.use(logger((line) => appLogger.info(line)));
 ## Security
 
 - Put the public signaling endpoint behind HTTPS. TLS termination is outside this package.
-- A decoded JWT is not an authenticated identity. Verify its signature and expected claims in `verifyClientToken`.
-- Invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
+- `untrustedIdentity` is decoded client input, not an authenticated identity. Never use it for authorization.
+- When `verifyClientToken` is configured, invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
 - Request bodies larger than 1 MiB are rejected with `413` before middleware runs. SDP offers must also be valid UTF-8.
 - To hide the global IP address of the backend, override ICE candidate. (See the "Rewrite ICE candidates" section.)
 

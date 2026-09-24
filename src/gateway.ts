@@ -2,7 +2,7 @@ import EventEmitter from 'node:events';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { proxyFetch } from 'httpxy';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
-import { verifyClientIdentity } from './identity';
+import { extractUntrustedClientIdentity, verifyClientIdentity } from './identity';
 import { createRequest, readBody, writeResponse, writeResponseWhileDraining } from './http';
 import type {
   GatewayMiddleware,
@@ -21,7 +21,6 @@ export interface NetherNetGatewayEvents {
 export interface NetherNetGatewayOptions {
   upstream: string | ((ctx: GatewayContext) => string);
   verifyClientToken?: VerifyClientToken;
-  requireClientIdentity?: boolean;
 }
 
 export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
@@ -34,11 +33,6 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
 
   constructor(options: NetherNetGatewayOptions) {
     super();
-
-    if (options.requireClientIdentity && !options.verifyClientToken) {
-      throw new TypeError('verifyClientToken is required when requireClientIdentity is true');
-    }
-
     this.options = { ...options };
   }
 
@@ -223,29 +217,31 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       signal: request.signal,
     });
 
+    let untrustedIdentity;
+    try {
+      untrustedIdentity = extractUntrustedClientIdentity(offer);
+    } catch {
+      return new Response('Invalid client identity', { status: 401 });
+    }
+    if (!untrustedIdentity) {
+      return new Response('Client identity is required', { status: 401 });
+    }
+
     const identity = await this.identity(offer);
     if (identity instanceof Response) return identity;
 
-    return { ...originalContext, req: request, url, networkId, offer, identity };
+    return { ...originalContext, req: request, url, networkId, offer, untrustedIdentity, identity };
   }
 
   private async identity(offer: string): Promise<NetherNetIdentity | undefined | Response> {
     const verifyClientToken = this.options.verifyClientToken;
     if (!verifyClientToken) return undefined;
 
-    // The guide leaves missing assertions to server policy; this option makes them mandatory (§5.1):
-    // https://mojang.github.io/bedrock-protocol-docs/guides/nether-net-onboarding-guide/#51-validating-the-client-assertion-in-the-offer
-    let identity: NetherNetIdentity | undefined;
     try {
-      identity = await verifyClientIdentity(offer, verifyClientToken);
+      return await verifyClientIdentity(offer, verifyClientToken);
     } catch {
       return new Response('Invalid client identity', { status: 401 });
     }
-
-    if (!identity && this.options.requireClientIdentity) {
-      return new Response('Client identity is required', { status: 401 });
-    }
-    return identity;
   }
 
   private async proxy(context: GatewayContext): Promise<Response> {

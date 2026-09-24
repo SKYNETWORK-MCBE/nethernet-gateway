@@ -14,10 +14,18 @@ export interface NetherNetServerInfo {
 
 export interface NetherNetIdentity {
   xuid: string;
+  playFabId: string;
+  gamertag: string;
   cpk: JWK;
   claims: Readonly<Record<string, unknown>>;
-  playFabId?: string;
-  uuid?: string;
+}
+
+/** Identity claims decoded without verifying the token or its binding to the SDP. */
+export interface UntrustedNetherNetIdentity {
+  readonly xuid: string;
+  readonly playFabId: string;
+  readonly gamertag: string;
+  readonly claims: Readonly<Record<string, unknown>>;
 }
 
 export type VerifyClientToken = (token: string) => Awaitable<NetherNetIdentity>;
@@ -41,7 +49,9 @@ export interface ServerInfoContext extends GatewayContext {}
 export interface JoinContext extends GatewayContext {
   readonly networkId: string;
   readonly offer: string;
-  readonly identity?: NetherNetIdentity;
+  /** Client-supplied claims that may be forged. Never use these for authorization. */
+  readonly untrustedIdentity: UntrustedNetherNetIdentity;
+  readonly identity: NetherNetIdentity | undefined;
 }
 
 /** A middleware can pass a replacement request to change the request sent downstream. */

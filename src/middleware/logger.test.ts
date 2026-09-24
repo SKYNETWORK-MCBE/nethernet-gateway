@@ -27,7 +27,11 @@ describe('logger', () => {
     const lines: string[] = [];
 
     await logger((line) => lines.push(line))(
-      { req: new Request('http://localhost/test'), url: new URL('http://localhost/test') },
+      {
+        req: new Request('http://localhost/test'),
+        url: new URL('http://localhost/test'),
+        remoteAddress: undefined,
+      },
       async () => new Response(null, { status }),
     );
 
@@ -41,7 +45,11 @@ describe('logger', () => {
     const lines: string[] = [];
 
     await logger((line) => lines.push(line))(
-      { req: new Request('http://localhost/test'), url: new URL('http://localhost/test') },
+      {
+        req: new Request('http://localhost/test'),
+        url: new URL('http://localhost/test'),
+        remoteAddress: undefined,
+      },
       async () => new Response(null, { status: 204 }),
     );
 

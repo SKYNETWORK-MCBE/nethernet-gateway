@@ -75,7 +75,11 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     } else {
       try {
         const request = await createRequest(incoming);
-        const context: GatewayContext = { req: request, url: new URL(request.url) };
+        const context: GatewayContext = {
+          req: request,
+          url: new URL(request.url),
+          remoteAddress: incoming.socket.remoteAddress,
+        };
 
         try {
           result = await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
@@ -156,22 +160,28 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   private async dispatch(requestContext: GatewayContext): Promise<Response> {
     const { req } = requestContext;
     const url = new URL(req.url);
-    const context = { req, url };
+    const context: GatewayContext = { ...requestContext, req, url };
 
     if (req.method === 'GET' && url.pathname === '/v1/join') {
       return this.middleware(this.infoMiddlewares, context);
     }
 
-    const joinContext = await this.createJoinContext(req);
+    const joinContext = await this.createJoinContext(context);
     if (joinContext instanceof Response) return joinContext;
-    return this.middleware(this.joinMiddlewares, joinContext, async (_context, replacement) => {
+    return this.middleware(this.joinMiddlewares, joinContext, async (current, replacement) => {
       // A replacement can change every field derived from the request, including verified identity.
-      return this.createJoinContext(replacement);
+      return this.createJoinContext({
+        ...current,
+        req: replacement,
+        url: new URL(replacement.url),
+      });
     });
   }
 
-  private async createJoinContext(originalRequest: Request): Promise<JoinContext | Response> {
-    let request = originalRequest;
+  private async createJoinContext(
+    originalContext: GatewayContext,
+  ): Promise<JoinContext | Response> {
+    let request = originalContext.req;
     const url = new URL(request.url);
     const match = request.method === 'POST' && /^\/v1\/join\/([^/]+)$/.exec(url.pathname);
     if (!match) return new Response('Not Found', { status: 404 });
@@ -220,7 +230,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     const identity = await this.identity(offer);
     if (identity instanceof Response) return identity;
 
-    return { req: request, url, networkId, offer, untrustedIdentity, identity };
+    return { ...originalContext, req: request, url, networkId, offer, untrustedIdentity, identity };
   }
 
   private async identity(offer: string): Promise<NetherNetIdentity | undefined | Response> {
@@ -309,7 +319,7 @@ async function runMiddleware<CTX extends GatewayContext>(
     const current = middleware[index];
     if (!current) return terminal(context);
 
-    const localContext = {
+    const localContext: CTX = {
       ...context,
       req: context.req.clone(),
       url: new URL(context.req.url),

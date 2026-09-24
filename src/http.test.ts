@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { RequestTooLargeError } from './errors';
 import { createRequest, readBody, writeResponse } from './http';
-import { createTestServers } from './test-server';
+import { createTestServers } from './test-helpers';
 
 const { serve, closeAll } = createTestServers();
 

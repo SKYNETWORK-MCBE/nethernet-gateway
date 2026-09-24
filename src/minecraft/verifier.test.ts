@@ -2,7 +2,7 @@ import { KeyObject } from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { createMinecraftClientTokenVerifier } from './verifier';
-import { createTestServers } from '../test-server';
+import { createTestServers } from '../test-helpers';
 
 const testServers = createTestServers();
 afterEach(testServers.closeAll);

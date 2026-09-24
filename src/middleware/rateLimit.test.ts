@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
 import { NetherNetGateway } from '../gateway';
-import { createTestServers } from '../test-server';
+import { createTestServers, untrustedOffer } from '../test-helpers';
 import type { GatewayContext } from '../types';
 import { rateLimit, type RateLimitOptions } from './rateLimit';
 
@@ -230,27 +230,13 @@ describe('rateLimit', () => {
       return new Response('OK');
     });
     const address = await serve(gateway.handleRequest.bind(gateway));
-    const token = [
-      'e30',
-      Buffer.from(
-        JSON.stringify({ xid: '0000000000000000', mid: '0000000000000000', xname: 'Player' }),
-      ).toString('base64url'),
-      'signature',
-    ].join('.');
-    const identity = Buffer.from(
-      JSON.stringify({
-        idp: { domain: 'auth.example', protocol: 'default' },
-        assertion: JSON.stringify({ token, fingerprints: 'unused' }),
-      }),
-    ).toString('base64');
-    const offer = `v=0\r\na=identity:${identity}\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n`;
 
     expect((await fetch(`${address}/v1/join`)).status).toBe(200);
     expect(
       (
         await fetch(`${address}/v1/join/network`, {
           method: 'POST',
-          body: offer,
+          body: untrustedOffer(),
         })
       ).status,
     ).toBe(200);

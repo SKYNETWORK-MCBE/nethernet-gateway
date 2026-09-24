@@ -8,7 +8,12 @@ import { connect, type Socket } from 'node:net';
 import { exportJWK, FlattenedSign, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, it } from 'vite-plus/test';
 import { NetherNetGateway } from './gateway';
-import { createTestServers } from './test-server';
+import {
+  createTestServers,
+  offerWithIdentityAssertion,
+  unsignedToken,
+  untrustedOffer,
+} from './test-helpers';
 import type {
   JoinContext,
   NetherNetGatewayErrorEvent,
@@ -678,36 +683,6 @@ const serverInfo: NetherNetServerInfo = {
   maxPlayers: 10,
   gameType: 0,
 };
-
-function offerWithIdentityAssertion(token: string): string {
-  const envelope = {
-    idp: { domain: 'auth.example', protocol: 'default' },
-    assertion: JSON.stringify({
-      token,
-      fingerprints: 'unused',
-    }),
-  };
-  const encodedIdentity = Buffer.from(JSON.stringify(envelope)).toString('base64');
-  return [
-    'v=0',
-    `a=identity:${encodedIdentity}`,
-    'm=application 9 UDP/DTLS/SCTP webrtc-datachannel',
-    '',
-  ].join('\r\n');
-}
-
-function untrustedOffer(content = 'v=0'): string {
-  const token = unsignedToken({
-    xid: '0000000000000000',
-    mid: '0000000000000000',
-    xname: 'Player',
-  });
-  return [content, offerWithIdentityAssertion(token)].join('\r\n');
-}
-
-function unsignedToken(claims: Readonly<Record<string, unknown>>): string {
-  return ['e30', Buffer.from(JSON.stringify(claims)).toString('base64url'), 'signature'].join('.');
-}
 
 async function createSignedOffer(
   token: string,

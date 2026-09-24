@@ -63,15 +63,15 @@ gateway.use(async (c, next) => {
 ### Rate limit requests
 
 Every join request that reaches BDS may reserve a UDP port. An attacker can exhaust the configured
-port range by repeatedly requesting offers, so apply `rateLimit` to the request middleware stack
-before routing and identity verification. The limiter uses a sliding window and can apply multiple
-limits to each request.
+port range by repeatedly requesting offers, so use `rateLimit` to limit join requests. The limiter
+uses a sliding window and can apply multiple limits to each request.
 
 ```ts
 import { NetherNetGateway, rateLimit } from 'nethernet-gateway';
 
 const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:19132' });
 gateway.use(
+  'join',
   rateLimit({
     windowMs: 60_000,
     rules: [rateLimit.ip(3), rateLimit.global(50)],
@@ -79,25 +79,10 @@ gateway.use(
 );
 ```
 
-The built-in `ip` key limits each direct TCP peer by IPv4 address or IPv6 `/64` prefix. IPv4-mapped
-IPv6 addresses share the corresponding IPv4 counter. Peers within the same IPv6 `/64` share a
-counter. The `global` key protects the BDS port pool from the total request rate. With this
-request-wide mounting, server information requests and unknown paths also consume capacity. A
-request must have capacity under every applicable rule before it reaches BDS.
-
-Responses that pass through the limiter include `RateLimit-Limit`, `RateLimit-Remaining`, and
-`RateLimit-Reset` headers. `RateLimit-Reset` is the number of seconds until the oldest counted
-request for the reported rule expires. With a sliding window, this restores one request slot, not
-necessarily the entire quota. When a limit is exceeded, the middleware returns
-`429 Too Many Requests` with the body `Too Many Requests` and a `Retry-After` header in seconds.
-With multiple rules, the headers report one applicable rule, not a separate set of values for each
-rule. On a 429 response, `Retry-After` is the time until all blocking rules have at least one slot.
-
-Use a key function to limit by any other value. Returning `undefined` skips that rule for the
-request. For example, a join middleware can limit verified players by XUID. Configure
-`verifyClientToken` to authenticate the token first; `c.identity` is only available after successful
-verification. Set `requireClientIdentity: true` if every join request must have a verified identity,
-otherwise requests without one skip this XUID rule:
+This join middleware runs after routing and identity verification. To limit verified players by
+XUID instead, use a key function. Configure `verifyClientToken` to authenticate the token first;
+`c.identity` is only available after successful verification. Set `requireClientIdentity: true` if
+every join request must have a verified identity, otherwise requests without one skip this XUID rule:
 
 ```ts
 import { type JoinContext } from 'nethernet-gateway';
@@ -111,6 +96,34 @@ gateway.use(
 );
 ```
 
+To also limit server information requests and unknown paths, mount the limiter on the request
+middleware stack instead, before routing and identity verification. Allow more requests in that
+case so information requests do not exhaust a join-sized quota:
+
+```ts
+gateway.use(
+  rateLimit({
+    windowMs: 60_000,
+    rules: [rateLimit.ip(30), rateLimit.global(500)],
+  }),
+);
+```
+
+The built-in `ip` key limits each direct TCP peer by IPv4 address or IPv6 `/64` prefix. IPv4-mapped
+IPv6 addresses share the corresponding IPv4 counter. Peers within the same IPv6 `/64` share a
+counter. The `global` key limits the total request rate. Choose limits appropriate for the paths
+covered by each middleware. A request must have capacity under every applicable rule before it
+reaches BDS.
+
+Responses that pass through the limiter include `RateLimit-Limit`, `RateLimit-Remaining`, and
+`RateLimit-Reset` headers. `RateLimit-Reset` is the number of seconds until the oldest counted
+request for the reported rule expires. With a sliding window, this restores one request slot, not
+necessarily the entire quota. When a limit is exceeded, the middleware returns
+`429 Too Many Requests` with the body `Too Many Requests` and a `Retry-After` header in seconds.
+With multiple rules, the headers report one applicable rule, not a separate set of values for each
+rule. On a 429 response, `Retry-After` is the time until all blocking rules have at least one slot.
+
+Key functions can limit by any other value; returning `undefined` skips that rule for the request.
 The helpers return ordinary rule objects, so helpers and manually defined rules can be combined.
 
 When the gateway runs behind a trusted proxy, use a key function that reads forwarding data the

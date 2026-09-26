@@ -310,27 +310,23 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
       remoteAddress: context.remoteAddress,
       headers: new Headers(context.req.headers),
     };
-    const payload: NetherNetGatewayInfoEvent | NetherNetGatewayJoinEvent =
-      event === 'join'
-        ? {
-            ...common,
-            networkId: (context as JoinContext).networkId,
-            untrustedIdentity: (context as JoinContext).untrustedIdentity,
-            identity: (context as JoinContext).identity,
-          }
-        : common;
-
-    // Invoke listeners separately so observing cannot change the forwarded request or its response.
-    // rawListeners preserves EventEmitter's once() behavior when invoking each listener directly.
-    for (const listener of this.rawListeners(event)) {
+    try {
+      if (event === 'join') {
+        const join = context as JoinContext;
+        this.emit('join', {
+          ...common,
+          networkId: join.networkId,
+          untrustedIdentity: join.untrustedIdentity,
+          identity: join.identity,
+        });
+      } else {
+        this.emit('info', common);
+      }
+    } catch (error) {
       try {
-        listener.call(this, { ...payload, headers: new Headers(common.headers) });
-      } catch (error) {
-        try {
-          this.emitRequestError('listener', error, context.req.method, url);
-        } catch {
-          // Even a failing error observer must not change the HTTP result.
-        }
+        this.emitRequestError('listener', error, context.req.method, url);
+      } catch {
+        // Even a failing error observer must not change the HTTP result.
       }
     }
   }

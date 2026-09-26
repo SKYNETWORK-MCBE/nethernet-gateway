@@ -254,7 +254,7 @@ describe('NetherNetGateway', () => {
     ]);
   });
 
-  it('emits info for the final request without sharing its headers with listeners', async () => {
+  it('emits info for the final request without changing forwarded headers', async () => {
     let forwarded: string | undefined;
     const upstream = await serve((req, res) => {
       forwarded = req.headers['x-observed'] as string | undefined;
@@ -262,6 +262,7 @@ describe('NetherNetGateway', () => {
     });
     const gateway = new NetherNetGateway({ upstream });
     const seen: NetherNetGatewayInfoEvent[] = [];
+    let onceCalls = 0;
     gateway.use('info', (c, next) => {
       c.req.headers.set('x-observed', 'middleware');
       return next(
@@ -270,12 +271,13 @@ describe('NetherNetGateway', () => {
         }),
       );
     });
+    gateway.once('info', (event) => {
+      onceCalls++;
+      expect(event.headers.get('x-observed')).toBe('middleware');
+    });
     gateway.on('info', (event) => {
       seen.push(event);
       event.headers.set('x-observed', 'listener');
-    });
-    gateway.once('info', (event) => {
-      expect(event.headers.get('x-observed')).toBe('middleware');
     });
     const address = await serve(gateway.handleRequest.bind(gateway));
 
@@ -283,6 +285,7 @@ describe('NetherNetGateway', () => {
     expect((await fetch(`${address}/v1/join`)).status).toBe(200);
 
     expect(seen).toHaveLength(2);
+    expect(onceCalls).toBe(1);
     expect(seen[0].url).toBe('/v1/join?changed=1');
     expect(seen[0].remoteAddress).toBeDefined();
     expect(forwarded).toBe('middleware');
@@ -349,10 +352,10 @@ describe('NetherNetGateway', () => {
       c.url.searchParams.has('blocked') ? new Response('Blocked', { status: 403 }) : next(),
     );
     gateway.use('join', () => new Response('Blocked', { status: 403 }));
+    gateway.on('info', (event) => observed.push(event.url));
     gateway.on('info', () => {
       throw new Error('observer failed');
     });
-    gateway.on('info', (event) => observed.push(event.url));
     gateway.on('join', (event) => joins.push(event));
     gateway.on('requestError', (event) => errors.push(event));
     const address = await serve(gateway.handleRequest.bind(gateway));

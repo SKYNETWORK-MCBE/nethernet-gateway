@@ -17,6 +17,8 @@ import {
 import type {
   JoinContext,
   NetherNetGatewayErrorEvent,
+  NetherNetGatewayInfoEvent,
+  NetherNetGatewayJoinEvent,
   NetherNetIdentity,
   NetherNetServerInfo,
 } from './types';
@@ -252,6 +254,124 @@ describe('NetherNetGateway', () => {
     ]);
   });
 
+  it('emits info for the final request without changing forwarded headers', async () => {
+    let forwarded: string | undefined;
+    const upstream = await serve((req, res) => {
+      forwarded = req.headers['x-observed'] as string | undefined;
+      res.end('ok');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const seen: NetherNetGatewayInfoEvent[] = [];
+    let onceCalls = 0;
+    gateway.use('info', (c, next) => {
+      c.req.headers.set('x-observed', 'middleware');
+      return next(
+        new Request(new URL('/v1/join?changed=1', c.req.url), {
+          headers: c.req.headers,
+        }),
+      );
+    });
+    gateway.once('info', (event) => {
+      onceCalls++;
+      expect(event.headers.get('x-observed')).toBe('middleware');
+    });
+    gateway.on('info', (event) => {
+      seen.push(event);
+      event.headers.set('x-observed', 'listener');
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    expect((await fetch(`${address}/v1/join`)).status).toBe(200);
+    expect((await fetch(`${address}/v1/join`)).status).toBe(200);
+
+    expect(seen).toHaveLength(2);
+    expect(onceCalls).toBe(1);
+    expect(seen[0].url).toBe('/v1/join?changed=1');
+    expect(seen[0].remoteAddress).toBeDefined();
+    expect(forwarded).toBe('middleware');
+  });
+
+  it('emits join once after replacement and verification, but not for rejected requests', async () => {
+    let forwarded: string | undefined;
+    const upstream = await serve((req, res) => {
+      forwarded = req.headers['x-observed'] as string | undefined;
+      res.end('answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const events: NetherNetGatewayJoinEvent[] = [];
+    gateway.use('join', (c, next) => {
+      c.req.headers.set('x-observed', 'middleware');
+      return next(
+        new Request(new URL('/v1/join/final', c.req.url), {
+          method: 'POST',
+          headers: c.req.headers,
+          body: c.offer,
+        }),
+      );
+    });
+    gateway.on('join', (event) => events.push(event));
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    expect(
+      (
+        await fetch(`${address}/v1/join/initial`, {
+          method: 'POST',
+          body: untrustedOffer(),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await fetch(`${address}/v1/join/invalid`, {
+          method: 'POST',
+          body: 'v=0\r\n',
+        })
+      ).status,
+    ).toBe(401);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      url: '/v1/join/final',
+      networkId: 'final',
+      identity: undefined,
+      untrustedIdentity: { gamertag: 'Player' },
+    });
+    expect(events[0].headers.get('x-observed')).toBe('middleware');
+    expect(forwarded).toBe('middleware');
+  });
+
+  it('does not emit for early responses and isolates listener failures', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    const observed: string[] = [];
+    const joins: NetherNetGatewayJoinEvent[] = [];
+    gateway.use('info', (c, next) =>
+      c.url.searchParams.has('blocked') ? new Response('Blocked', { status: 403 }) : next(),
+    );
+    gateway.use('join', () => new Response('Blocked', { status: 403 }));
+    gateway.on('info', (event) => observed.push(event.url));
+    gateway.on('info', () => {
+      throw new Error('observer failed');
+    });
+    gateway.on('join', (event) => joins.push(event));
+    gateway.on('requestError', (event) => errors.push(event));
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    expect((await fetch(`${address}/v1/join?blocked=1`)).status).toBe(403);
+    expect(
+      (await fetch(`${address}/v1/join/1`, { method: 'POST', body: untrustedOffer() })).status,
+    ).toBe(403);
+    expect((await fetch(`${address}/v1/join`)).status).toBe(200);
+    expect(observed).toEqual(['/v1/join']);
+    expect(joins).toEqual([]);
+    expect(errors).toEqual([
+      expect.objectContaining({ source: 'listener', method: 'GET', url: '/v1/join' }),
+    ]);
+  });
+
   it('resolves the upstream from the context after middleware replaces the request', async () => {
     const primary = await serve((_req, res) => {
       res.end('primary');
@@ -471,6 +591,8 @@ describe('NetherNetGateway', () => {
       },
     });
     const seen: Array<{ identity?: string; networkId: string; offer: string }> = [];
+    const joinEvents: NetherNetGatewayJoinEvent[] = [];
+    gateway.on('join', (event) => joinEvents.push(event));
     gateway.use('join', (c, next) => {
       seen.push({
         identity: c.identity?.xuid,
@@ -501,6 +623,9 @@ describe('NetherNetGateway', () => {
 
     expect(response.status).toBe(200);
     expect(verifications).toBe(2);
+    expect(joinEvents).toHaveLength(1);
+    expect(joinEvents[0].identity?.xuid).toBe('verified-xuid');
+    expect(joinEvents[0].networkId).toBe('replaced');
     expect(seen).toEqual([
       { identity: 'verified-xuid', networkId: 'original', offer: signed.offer },
       { identity: 'verified-xuid', networkId: 'replaced', offer: signed.offer },

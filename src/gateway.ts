@@ -9,6 +9,8 @@ import type {
   GatewayContext,
   JoinContext,
   NetherNetGatewayErrorEvent,
+  NetherNetGatewayInfoEvent,
+  NetherNetGatewayJoinEvent,
   NetherNetIdentity,
   ServerInfoContext,
   VerifyClientToken,
@@ -16,6 +18,8 @@ import type {
 
 export interface NetherNetGatewayEvents {
   requestError: [event: NetherNetGatewayErrorEvent];
+  info: [event: NetherNetGatewayInfoEvent];
+  join: [event: NetherNetGatewayJoinEvent];
 }
 
 export interface NetherNetGatewayOptions {
@@ -164,19 +168,26 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     const context: GatewayContext = { ...requestContext, req, url };
 
     if (req.method === 'GET' && url.pathname === '/v1/join') {
-      return this.middleware(this.infoMiddlewares, context);
+      return this.middleware(this.infoMiddlewares, context, undefined, (current) => {
+        this.emitObservation('info', current);
+      });
     }
 
     const joinContext = await this.createJoinContext(context);
     if (joinContext instanceof Response) return joinContext;
-    return this.middleware(this.joinMiddlewares, joinContext, async (current, replacement) => {
-      // A replacement can change every field derived from the request, including verified identity.
-      return this.createJoinContext({
-        ...current,
-        req: replacement,
-        url: new URL(replacement.url),
-      });
-    });
+    return this.middleware(
+      this.joinMiddlewares,
+      joinContext,
+      async (current, replacement) => {
+        // A replacement can change every field derived from the request, including verified identity.
+        return this.createJoinContext({
+          ...current,
+          req: replacement,
+          url: new URL(replacement.url),
+        });
+      },
+      (current) => this.emitObservation('join', current),
+    );
   }
 
   private async createJoinContext(
@@ -272,12 +283,51 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     middleware: readonly GatewayMiddleware<CTX>[],
     context: CTX,
     replace?: ReplaceContext<CTX>,
+    beforeProxy?: (context: CTX) => void,
   ): Promise<Response> {
     try {
-      return await runMiddleware(middleware, context, (context) => this.proxy(context), replace);
+      return await runMiddleware(
+        middleware,
+        context,
+        (current) => {
+          beforeProxy?.(current);
+          return this.proxy(current);
+        },
+        replace,
+      );
     } catch (error) {
       this.emitRequestError('middleware', error, context.req.method, context.req.url);
       return new Response('Internal Server Error', { status: 500 });
+    }
+  }
+
+  private emitObservation(event: 'info', context: ServerInfoContext): void;
+  private emitObservation(event: 'join', context: JoinContext): void;
+  private emitObservation(event: 'info' | 'join', context: GatewayContext): void {
+    const url = requestTarget(context.req.url);
+    const common: NetherNetGatewayInfoEvent = {
+      url,
+      remoteAddress: context.remoteAddress,
+      headers: new Headers(context.req.headers),
+    };
+    try {
+      if (event === 'join') {
+        const join = context as JoinContext;
+        this.emit('join', {
+          ...common,
+          networkId: join.networkId,
+          untrustedIdentity: join.untrustedIdentity,
+          identity: join.identity,
+        });
+      } else {
+        this.emit('info', common);
+      }
+    } catch (error) {
+      try {
+        this.emitRequestError('listener', error, context.req.method, url);
+      } catch {
+        // Even a failing error observer must not change the HTTP result.
+      }
     }
   }
 

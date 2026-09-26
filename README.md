@@ -282,6 +282,22 @@ gateway.on('requestError', ({ source, error, method, url }) => {
 
 Authentication failures and other expected `4xx` responses are not emitted.
 
+## Observe server information and joins
+
+Use `info` and `join` events to log requests without using middleware or changing the request:
+
+```ts
+gateway.on('info', ({ url }) => {
+  console.log('Server information requested:', url);
+});
+
+gateway.on('join', ({ networkId, untrustedIdentity, identity }) => {
+  console.log('Join attempt:', networkId, identity?.gamertag ?? untrustedIdentity.gamertag);
+});
+```
+
+These events fire once when a valid request reaches the upstream forwarding step, after middleware has run. They do not fire for early middleware responses or rejected join offers; an upstream failure can still follow an event. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+
 ## Log requests
 
 Register `logger()` once to log every request.

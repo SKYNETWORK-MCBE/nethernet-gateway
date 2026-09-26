@@ -34,6 +34,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   constructor(options: NetherNetGatewayOptions) {
     super();
     this.options = { ...options };
+    this.validateOptions();
   }
 
   use(middleware: GatewayMiddleware): this;
@@ -287,6 +288,17 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     url: string,
   ): void {
     this.emit('requestError', { source, error, method, url: requestTarget(url) });
+  }
+
+  private validateOptions(): void {
+    const upstream = this.options.upstream;
+    if (typeof upstream === 'string' && !URL.canParse(upstream)) {
+      if (!upstream.startsWith('http://') && !upstream.startsWith('https://')) {
+        throw new Error('Upstream URL must start with http:// or https://');
+      } else {
+        throw new Error('Invalid upstream URL');
+      }
+    }
   }
 }
 

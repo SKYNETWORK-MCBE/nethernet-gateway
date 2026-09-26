@@ -235,25 +235,23 @@ Treat this as an early rejection only; repeat the authoritative BAN check after 
 
 ### Rewrite ICE candidates
 
-A gateway that does not share an address with the game server leaves both sides advertising ICE candidates the other cannot reach. `rewriteAnswerCandidates` keeps only the routable candidates in the upstream answer, drops host candidates once a NAT-traversing candidate exists, blanks the related address, and readdresses the survivors to the gateway. `stripOfferCandidates` removes the client's candidates from the offer; pass the replacement request to `next()` to send it upstream.
+A gateway that does not share an address with the game server leaves both sides advertising ICE candidates the other cannot reach. `rewriteCandidates` removes the client's candidates from the offer before it reaches the upstream server. In the upstream answer it keeps only the routable candidates: candidates without a global IP address, such as private or mDNS ones, are dropped, host candidates are dropped once a NAT-traversing candidate exists, and the survivors are readdressed to `mapAddress`.
 
 ```ts
-import { NetherNetGateway, rewriteAnswerCandidates, stripOfferCandidates } from 'nethernet-gateway';
+import { NetherNetGateway, rewriteCandidates } from 'nethernet-gateway';
 
 const gateway = new NetherNetGateway({
   upstream: 'http://127.0.0.1:19132',
 });
 
-gateway.use('join', async (c, next) => {
-  const offer = stripOfferCandidates(c.offer);
-  const response = await next(new Request(c.req, { method: 'POST', body: offer }));
-  const answer = rewriteAnswerCandidates(await response.text(), '203.0.113.10');
-
-  return new Response(answer, response);
-});
+gateway.use('join', rewriteCandidates({ mapAddress: { ip: '203.0.113.10', port: 19132 } }));
 ```
 
-Candidates are readdressed only when the second argument is a non-empty address; pass `''` to filter without rewriting. When no candidate survives, the answer is returned unchanged so the connection can still complete. Pass `false` as the third argument to drop the candidates instead.
+Set only `ip` to keep each candidate's own port, or only `port` to keep its address. Pass a function as `mapAddress` to choose the address for each join. It receives the addresses of the answer's candidates and the join context. Omit `mapAddress` to keep the routable candidates at their own address.
+
+When no candidate survives, the answer is returned unchanged, private candidates included, so the connection can still complete. Set `fallback: 'drop'` to remove the candidates instead.
+
+The related address of a reflexive or relayed candidate exposes the upstream server's own address. By default it is replaced with `0.0.0.0` or `::` and port `0`. Pass an object to replace only the `ip` or `port` it sets, leaving the other field as the upstream sent it, or `false` to keep the related address. A `port` that is not an integer from 0 to 65535 makes `rewriteCandidates` throw a `RangeError`. Error responses from the upstream server are passed through unchanged.
 
 ## Use an existing Node server
 
@@ -308,7 +306,7 @@ gateway.use(logger((line) => appLogger.info(line)));
 - `untrustedIdentity` is decoded client input, not an authenticated identity. Never use it for authorization.
 - When `verifyClientToken` is configured, invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
 - Request bodies larger than 1 MiB are rejected with `413` before middleware runs. SDP offers must also be valid UTF-8.
-- To hide the global IP address of the backend, override ICE candidate. (See the "Rewrite ICE candidates" section.)
+- To hide the addresses of the backend, use `rewriteCandidates` with `mapAddress` and `fallback: 'drop'`. (See the "Rewrite ICE candidates" section.)
 
 ## Acknowledgements
 

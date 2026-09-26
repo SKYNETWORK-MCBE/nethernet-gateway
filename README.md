@@ -315,3 +315,6 @@ gateway.use(logger((line) => appLogger.info(line)));
 - [mojang/bedrock-protocol-docs](https://mojang.github.io/bedrock-protocol-docs/guides/nether-net-onboarding-guide/)
 - [df-mc/go-nethernet](https://github.com/df-mc/go-nethernet)
 - [df-mc/nethernet-spec](https://github.com/df-mc/nethernet-spec)
+- [prismarinejs/node-nethernet](https://github.com/prismarinejs/node-nethernet)
+- [Hono](https://github.com/honojs/hono) — middleware API design
+- [@hono/node-server](https://github.com/honojs/node-server) — cleanup of unread HTTP request bodies

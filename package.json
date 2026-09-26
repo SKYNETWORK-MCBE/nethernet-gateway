@@ -14,7 +14,8 @@
     "url": "https://github.com/SKYNETWORK-MCBE/nethernet-gateway.git"
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "type": "module",
   "exports": {

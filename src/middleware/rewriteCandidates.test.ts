@@ -358,6 +358,15 @@ describe('rewriteCandidates', () => {
       `a=candidate:3387171477 1 udp 1685790463 ${ADVERTISE.ip} ${ADVERTISE.port} typ srflx raddr 0.0.0.0 rport 0 generation 0 network-id 1`,
     ]);
   });
+
+  it.each([-1, 65536, 1.5, Number.NaN])('throws when maskRelatedAddress.port is %s', (port) => {
+    expect(() => rewriteCandidates({ maskRelatedAddress: { port } })).toThrow(RangeError);
+  });
+
+  it('accepts maskRelatedAddress.port at both ends of the range', () => {
+    expect(() => rewriteCandidates({ maskRelatedAddress: { port: 0 } })).not.toThrow();
+    expect(() => rewriteCandidates({ maskRelatedAddress: { port: 65535 } })).not.toThrow();
+  });
 });
 
 // Runs the middleware against a stubbed upstream answer and returns what each side saw.

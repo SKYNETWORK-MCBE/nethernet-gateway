@@ -64,6 +64,12 @@ export function rewriteCandidates(
   options: RewriteCandidateOptions = {},
 ): GatewayMiddleware<JoinContext> {
   const { mapAddress, fallback = 'original', maskRelatedAddress = true } = options;
+  if (typeof maskRelatedAddress === 'object' && maskRelatedAddress.port !== undefined) {
+    const { port } = maskRelatedAddress;
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      throw new RangeError('maskRelatedAddress.port must be an integer in [0, 65535]');
+    }
+  }
 
   return async (c, next) => {
     const response = await next(

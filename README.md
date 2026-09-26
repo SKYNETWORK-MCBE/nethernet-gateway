@@ -251,7 +251,7 @@ Set only `ip` to keep each candidate's own port, or only `port` to keep its addr
 
 When no candidate survives, the answer is returned unchanged, private candidates included, so the connection can still complete. Set `fallback: 'drop'` to remove the candidates instead.
 
-The related address of a reflexive or relayed candidate exposes the upstream server's own address. By default it is replaced with `0.0.0.0` or `::` and port `0`. Pass an object to replace only the `ip` or `port` it sets, leaving the other field as the upstream sent it, or `false` to keep the related address. Error responses from the upstream server are passed through unchanged.
+The related address of a reflexive or relayed candidate exposes the upstream server's own address. By default it is replaced with `0.0.0.0` or `::` and port `0`. Pass an object to replace only the `ip` or `port` it sets, leaving the other field as the upstream sent it, or `false` to keep the related address. A `port` that is not an integer from 0 to 65535 makes `rewriteCandidates` throw a `RangeError`. Error responses from the upstream server are passed through unchanged.
 
 ## Use an existing Node server
 

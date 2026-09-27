@@ -8,14 +8,12 @@ const gateway = new NetherNetGateway({
 
 gateway.use(logger());
 
-gateway.use('info', (ctx, next) => {
-  // console.log(ctx);
-  return next();
+gateway.on('info', ({ url }) => {
+  console.log('Server information requested:', url);
 });
 
-gateway.use('join', (ctx, next) => {
-  // console.log(ctx);
-  return next();
+gateway.on('join', ({ networkId, identity, untrustedIdentity }) => {
+  console.log('Join attempt:', networkId, identity?.gamertag ?? untrustedIdentity.gamertag);
 });
 
 gateway.on('requestError', (event) => {

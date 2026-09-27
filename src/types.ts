@@ -31,10 +31,25 @@ export interface UntrustedNetherNetIdentity {
 export type VerifyClientToken = (token: string) => Awaitable<NetherNetIdentity>;
 
 export interface NetherNetGatewayErrorEvent {
-  readonly source: 'request' | 'middleware' | 'upstream' | 'response';
+  readonly source: 'request' | 'middleware' | 'upstream' | 'response' | 'listener';
   readonly error: unknown;
   readonly method: string;
   readonly url: string;
+}
+
+/** An attempt to forward a server information request. Headers are a detached snapshot. */
+export interface NetherNetGatewayInfoEvent {
+  readonly url: string;
+  readonly remoteAddress: string | undefined;
+  readonly headers: Headers;
+}
+
+/** An attempt to forward a validated join offer. Headers are a detached snapshot. */
+export interface NetherNetGatewayJoinEvent extends NetherNetGatewayInfoEvent {
+  readonly networkId: string;
+  /** Client-supplied claims that may be forged. Never use these for authorization. */
+  readonly untrustedIdentity: UntrustedNetherNetIdentity;
+  readonly identity: NetherNetIdentity | undefined;
 }
 
 export interface GatewayContext {

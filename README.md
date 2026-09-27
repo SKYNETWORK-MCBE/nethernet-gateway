@@ -244,7 +244,7 @@ const gateway = new NetherNetGateway({
   upstream: 'http://127.0.0.1:19132',
 });
 
-gateway.use('join', rewriteCandidates({ mapAddress: { ip: '203.0.113.10', port: 19132 } }));
+gateway.use('join', rewriteCandidates({ mapAddress: { ip: '203.0.113.10' } }));
 ```
 
 Set only `ip` to keep each candidate's own port, or only `port` to keep its address. Pass a function as `mapAddress` to choose the address for each join. It receives the addresses of the answer's candidates and the join context. Omit `mapAddress` to keep the routable candidates at their own address.

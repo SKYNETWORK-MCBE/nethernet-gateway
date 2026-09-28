@@ -44,13 +44,27 @@ export interface NetherNetGatewayInfoEvent {
   readonly headers: Headers;
 }
 
-/** An attempt to forward a validated join offer. Headers are a detached snapshot. */
-export interface NetherNetGatewayJoinEvent extends NetherNetGatewayInfoEvent {
+/**
+ * The verified identity of a join. `Verified` is `true` when the gateway has a `verifyClientToken`,
+ * so the identity is always present, and `false` when it has none, so there is no identity at all.
+ * `boolean` leaves it optional for code that works with either gateway.
+ */
+export type JoinIdentity<Verified extends boolean = boolean> = [Verified] extends [true]
+  ? { readonly identity: NetherNetIdentity }
+  : [Verified] extends [false]
+    ? unknown
+    : { readonly identity?: NetherNetIdentity | undefined };
+
+/** A join event without its verified identity; see {@link NetherNetGatewayJoinEvent}. */
+export interface NetherNetGatewayJoinEventBase extends NetherNetGatewayInfoEvent {
   readonly networkId: string;
   /** Client-supplied claims that may be forged. Never use these for authorization. */
   readonly untrustedIdentity: UntrustedNetherNetIdentity;
-  readonly identity: NetherNetIdentity | undefined;
 }
+
+/** An attempt to forward a validated join offer. Headers are a detached snapshot. */
+export type NetherNetGatewayJoinEvent<Verified extends boolean = boolean> =
+  NetherNetGatewayJoinEventBase & JoinIdentity<Verified>;
 
 export interface GatewayContext {
   readonly req: Request;
@@ -61,13 +75,16 @@ export interface GatewayContext {
 
 export interface ServerInfoContext extends GatewayContext {}
 
-export interface JoinContext extends GatewayContext {
+/** A join context without its verified identity; see {@link JoinContext}. */
+export interface JoinContextBase extends GatewayContext {
   readonly networkId: string;
   readonly offer: string;
   /** Client-supplied claims that may be forged. Never use these for authorization. */
   readonly untrustedIdentity: UntrustedNetherNetIdentity;
-  readonly identity: NetherNetIdentity | undefined;
 }
+
+export type JoinContext<Verified extends boolean = boolean> = JoinContextBase &
+  JoinIdentity<Verified>;
 
 /** A middleware can pass a replacement request to change the request sent downstream. */
 export type Next = (req?: Request) => Promise<Response>;

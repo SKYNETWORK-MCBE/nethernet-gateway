@@ -448,6 +448,7 @@ describe('NetherNetGateway', () => {
       expect(c.networkId).toBe('network id');
       expect(c.url.searchParams.get('source')).toBe('test');
       expect(c.offer).toBe(offer);
+      //@ts-expect-error
       contextIdentity = c.identity;
       return next();
     });

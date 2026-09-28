@@ -16,10 +16,10 @@ import type {
   VerifyClientToken,
 } from './types';
 
-export interface NetherNetGatewayEvents {
+export interface NetherNetGatewayEvents<Verified extends boolean = boolean> {
   requestError: [event: NetherNetGatewayErrorEvent];
   info: [event: NetherNetGatewayInfoEvent];
-  join: [event: NetherNetGatewayJoinEvent];
+  join: [event: NetherNetGatewayJoinEvent<Verified>];
 }
 
 export interface NetherNetGatewayOptions {
@@ -27,7 +27,19 @@ export interface NetherNetGatewayOptions {
   verifyClientToken?: VerifyClientToken;
 }
 
-export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
+export type IsVerified<Options extends NetherNetGatewayOptions> = Options extends {
+  verifyClientToken: VerifyClientToken;
+}
+  ? true
+  : Options extends {
+        upstream: unknown;
+        verifyClientToken?: undefined;
+      }
+    ? false
+    : boolean;
+export class NetherNetGateway<
+  out Options extends NetherNetGatewayOptions = NetherNetGatewayOptions,
+> extends EventEmitter<NetherNetGatewayEvents<IsVerified<Options>>> {
   readonly options: Readonly<NetherNetGatewayOptions>;
 
   private readonly infoMiddlewares: GatewayMiddleware<ServerInfoContext>[] = [];
@@ -35,18 +47,27 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
   private readonly requestMiddlewares: GatewayMiddleware[] = [];
   server?: Server;
 
+  constructor(
+    options: Options & Record<Exclude<keyof Options, keyof NetherNetGatewayOptions>, never>,
+  );
+  constructor(options: NetherNetGatewayOptions);
   constructor(options: NetherNetGatewayOptions) {
     super();
-    this.options = { ...options };
+    this.options = Object.freeze({
+      upstream: options.upstream,
+      verifyClientToken: options.verifyClientToken,
+    });
     this.validateOptions();
   }
 
   use(middleware: GatewayMiddleware): this;
   use(selector: 'info', middleware: GatewayMiddleware<ServerInfoContext>): this;
-  use(selector: 'join', middleware: GatewayMiddleware<JoinContext>): this;
+  use(selector: 'join', middleware: GatewayMiddleware<JoinContext<IsVerified<Options>>>): this;
   use(
     selector: 'info' | 'join' | GatewayMiddleware,
-    middleware?: GatewayMiddleware<ServerInfoContext> | GatewayMiddleware<JoinContext>,
+    middleware?:
+      | GatewayMiddleware<ServerInfoContext>
+      | GatewayMiddleware<JoinContext<IsVerified<Options>>>,
   ): this {
     if (typeof selector === 'function') {
       this.requestMiddlewares.push(selector);
@@ -313,7 +334,7 @@ export class NetherNetGateway extends EventEmitter<NetherNetGatewayEvents> {
     try {
       if (event === 'join') {
         const join = context as JoinContext;
-        this.emit('join', {
+        (this as EventEmitter<NetherNetGatewayEvents>).emit('join', {
           ...common,
           networkId: join.networkId,
           untrustedIdentity: join.untrustedIdentity,

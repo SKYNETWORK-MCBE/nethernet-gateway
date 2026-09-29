@@ -88,18 +88,22 @@ gateway.use(
 ```
 
 This join middleware runs after routing and identity verification. To limit verified players by
-XUID instead, use a key function. Configure `verifyClientToken` to authenticate the token first;
-`c.identity` is only available after successful verification. Set `requireClientIdentity: true` if
-every join request must have a verified identity, otherwise requests without one skip this XUID rule:
+XUID instead, use a key function on a gateway with `verifyClientToken`. Every join that reaches it
+has a verified `c.identity`; on a gateway without a verifier, reading it is a type error:
 
 ```ts
-import { type JoinContext } from 'nethernet-gateway';
+import { createMinecraftClientTokenVerifier } from 'nethernet-gateway/minecraft';
 
-gateway.use(
+const verifiedGateway = new NetherNetGateway({
+  upstream: 'http://127.0.0.1:19132',
+  verifyClientToken: createMinecraftClientTokenVerifier(),
+});
+
+verifiedGateway.use(
   'join',
-  rateLimit<JoinContext>({
+  rateLimit({
     windowMs: 60_000,
-    rules: [rateLimit.custom<JoinContext>(2, (c) => c.identity?.xuid)],
+    rules: [rateLimit.custom(2, (c) => c.identity.xuid)],
   }),
 );
 ```
@@ -193,11 +197,11 @@ gateway.use('join', (c, next) => {
 
 Missing or malformed identity assertions are rejected with `401`. Structural validation covers the SDP identity envelope, compact JWT shape, and the `xid`, `mid`, and `xname` claims. It does not validate the JWT signature, issuer, audience, timestamps, or public key. Never use `untrustedIdentity` for bans, allowlists, permissions, or other authorization decisions.
 
-Without `verifyClientToken`, `c.identity` remains undefined and the structurally valid offer is forwarded using only `untrustedIdentity`.
+Without `verifyClientToken`, a join has no `c.identity`, so reading it is a type error, and the structurally valid offer is forwarded using only `untrustedIdentity`.
 
 ### Verify client identity
 
-`verifyClientToken` authenticates the `GameServerToken` and returns a normalized `NetherNetIdentity`. The gateway trusts that return value, then uses its `cpk` to verify the signature over the SDP fingerprints. `c.identity` is exposed only after both steps succeed. The built-in verifier trusts Minecraft's current authorization service and fetches its JWKS lazily when the first assertion arrives.
+`verifyClientToken` authenticates the `GameServerToken` and returns a normalized `NetherNetIdentity`. The gateway trusts that return value, then uses its `cpk` to verify the signature over the SDP fingerprints. `c.identity` is exposed only after both steps succeed, so with `verifyClientToken` it is typed as always present. When the options leave the verifier open, such as `verifyClientToken: enabled ? verifier : undefined`, it is optional. The built-in verifier trusts Minecraft's current authorization service and fetches its JWKS lazily when the first assertion arrives.
 
 ```ts
 import { NetherNetGateway } from 'nethernet-gateway';
@@ -223,7 +227,7 @@ Use a join middleware to reject known XUIDs at signaling time. This uses the ver
 const bannedXuids = new Set(['0000000000000000']);
 
 gateway.use('join', (c, next) => {
-  if (c.identity && bannedXuids.has(c.identity.xuid)) {
+  if (bannedXuids.has(c.identity.xuid)) {
     return new Response('Banned', { status: 403 });
   }
 
@@ -296,7 +300,7 @@ gateway.on('join', ({ networkId, untrustedIdentity, identity }) => {
 });
 ```
 
-These events fire once when a valid request reaches the upstream forwarding step, after middleware has run. They do not fire for early middleware responses or rejected join offers; an upstream failure can still follow an event. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+These events fire once when a valid request reaches the upstream forwarding step, after middleware has run. They do not fire for early middleware responses or rejected join offers; an upstream failure can still follow an event. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
 
 ## Log requests
 

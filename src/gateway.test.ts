@@ -6,7 +6,7 @@ import {
 } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { exportJWK, FlattenedSign, generateKeyPair } from 'jose';
-import { afterEach, describe, expect, it } from 'vite-plus/test';
+import { afterEach, describe, expect, expectTypeOf, it } from 'vite-plus/test';
 import { NetherNetGateway } from './gateway';
 import {
   createTestServers,
@@ -21,6 +21,7 @@ import type {
   NetherNetGatewayJoinEvent,
   NetherNetIdentity,
   NetherNetServerInfo,
+  VerifyClientToken,
 } from './types';
 
 const { servers, serve, closeServer, closeAll } = createTestServers();
@@ -448,6 +449,7 @@ describe('NetherNetGateway', () => {
       expect(c.networkId).toBe('network id');
       expect(c.url.searchParams.get('source')).toBe('test');
       expect(c.offer).toBe(offer);
+      //@ts-expect-error
       contextIdentity = c.identity;
       return next();
     });
@@ -468,6 +470,40 @@ describe('NetherNetGateway', () => {
       header: 'kept',
       body: offer,
     });
+  });
+
+  it('types the join identity for each verifier state', () => {
+    const verifier: VerifyClientToken = () => {
+      throw new Error('unused');
+    };
+    const maybeVerifier = undefined as VerifyClientToken | undefined;
+    const upstream = 'http://127.0.0.1:1';
+    const verified = new NetherNetGateway({ upstream, verifyClientToken: verifier });
+    const unverified = new NetherNetGateway({ upstream });
+    const unknown = new NetherNetGateway({ upstream, verifyClientToken: maybeVerifier });
+
+    verified.use('join', (c, next) => {
+      expectTypeOf(c.identity).toEqualTypeOf<NetherNetIdentity>();
+      return next();
+    });
+    verified.on('join', (e) => expectTypeOf(e.identity).toEqualTypeOf<NetherNetIdentity>());
+    unverified.use('join', (c, next) => {
+      expectTypeOf(c).not.toHaveProperty('identity');
+      return next();
+    });
+    unverified.on('join', (e) => expectTypeOf(e).not.toHaveProperty('identity'));
+    unknown.use('join', (c, next) => {
+      expectTypeOf(c.identity).toEqualTypeOf<NetherNetIdentity | undefined>();
+      return next();
+    });
+    unknown.on('join', (e) =>
+      expectTypeOf(e.identity).toEqualTypeOf<NetherNetIdentity | undefined>(),
+    );
+
+    // Every gateway still fits a plain annotation, but only a verified one fits a verified slot.
+    expectTypeOf([verified, unverified, unknown]).toExtend<NetherNetGateway[]>();
+    expectTypeOf(unverified).not.toExtend<typeof verified>();
+    expectTypeOf(unknown).not.toExtend<typeof verified>();
   });
 
   it('exposes untrusted identity claims without configuring a verifier', async () => {

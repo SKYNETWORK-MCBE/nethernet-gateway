@@ -31,8 +31,7 @@ export type IsVerified<Options extends NetherNetGatewayOptions> = Options extend
   verifyClientToken: VerifyClientToken;
 }
   ? true
-  : Options extends {
-        upstream: unknown;
+  : Options extends Omit<NetherNetGatewayOptions, 'verifyClientToken'> & {
         verifyClientToken?: undefined;
       }
     ? false

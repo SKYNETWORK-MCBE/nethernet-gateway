@@ -53,10 +53,7 @@ export class NetherNetGateway<
   constructor(options: NetherNetGatewayOptions);
   constructor(options: NetherNetGatewayOptions) {
     super();
-    this.options = Object.freeze({
-      upstream: options.upstream,
-      verifyClientToken: options.verifyClientToken,
-    });
+    this.options = Object.freeze({ ...options });
     this.validateOptions();
   }
 

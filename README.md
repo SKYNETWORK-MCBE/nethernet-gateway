@@ -197,7 +197,7 @@ gateway.use('join', (c, next) => {
 
 Missing or malformed identity assertions are rejected with `401`. Structural validation covers the SDP identity envelope, compact JWT shape, and the `xid`, `mid`, and `xname` claims. It does not validate the JWT signature, issuer, audience, timestamps, or public key. Never use `untrustedIdentity` for bans, allowlists, permissions, or other authorization decisions.
 
-Without `verifyClientToken`, `c.identity` remains undefined and the structurally valid offer is forwarded using only `untrustedIdentity`.
+Without `verifyClientToken`, a join has no `c.identity`, so reading it is a type error, and the structurally valid offer is forwarded using only `untrustedIdentity`.
 
 ### Verify client identity
 
@@ -300,7 +300,7 @@ gateway.on('join', ({ networkId, untrustedIdentity, identity }) => {
 });
 ```
 
-These events fire once when a valid request reaches the upstream forwarding step, after middleware has run. They do not fire for early middleware responses or rejected join offers; an upstream failure can still follow an event. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+These events fire once when a valid request reaches the upstream forwarding step, after middleware has run. They do not fire for early middleware responses or rejected join offers; an upstream failure can still follow an event. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
 
 ## Log requests
 

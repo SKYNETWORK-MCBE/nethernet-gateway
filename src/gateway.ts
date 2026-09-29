@@ -46,11 +46,8 @@ export class NetherNetGateway<
   private readonly requestMiddlewares: GatewayMiddleware[] = [];
   server?: Server;
 
-  constructor(
-    options: Options & Record<Exclude<keyof Options, keyof NetherNetGatewayOptions>, never>,
-  );
-  constructor(options: NetherNetGatewayOptions);
-  constructor(options: NetherNetGatewayOptions) {
+  constructor(options: Options);
+  constructor(options: Options) {
     super();
     this.options = Object.freeze({ ...options });
     this.validateOptions();

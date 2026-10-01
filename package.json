@@ -1,6 +1,6 @@
 {
   "name": "nethernet-gateway",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Middleware-first proxy for Minecraft NetherNet HTTP signaling",
   "keywords": [
     "minecraft",

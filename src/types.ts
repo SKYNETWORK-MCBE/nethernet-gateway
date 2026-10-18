@@ -37,11 +37,13 @@ export interface NetherNetGatewayErrorEvent {
   readonly url: string;
 }
 
-/** An attempt to forward a server information request. Headers are a detached snapshot. */
+/** A server information request that was forwarded upstream. Headers are a detached snapshot. */
 export interface NetherNetGatewayInfoEvent {
   readonly url: string;
   readonly remoteAddress: string | undefined;
   readonly headers: Headers;
+  /** Status of the final response sent to the client, after every middleware has run. */
+  readonly status: number;
 }
 
 /**
@@ -62,7 +64,7 @@ export interface NetherNetGatewayJoinEventBase extends NetherNetGatewayInfoEvent
   readonly untrustedIdentity: UntrustedNetherNetIdentity;
 }
 
-/** An attempt to forward a validated join offer. Headers are a detached snapshot. */
+/** A validated join offer that was forwarded upstream. Headers are a detached snapshot. */
 export type NetherNetGatewayJoinEvent<Verified extends boolean = boolean> =
   NetherNetGatewayJoinEventBase & JoinIdentity<Verified>;
 

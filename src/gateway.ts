@@ -182,9 +182,9 @@ export class NetherNetGateway<
     const context: GatewayContext = { ...requestContext, req, url };
 
     if (req.method === 'GET' && url.pathname === '/v1/join') {
-      return this.middleware(this.infoMiddlewares, context, undefined, (current) => {
-        this.emitObservation('info', current);
-      });
+      return this.middleware(this.infoMiddlewares, context, undefined, (current) =>
+        this.observe('info', current),
+      );
     }
 
     const joinContext = await this.createJoinContext(context);
@@ -200,7 +200,7 @@ export class NetherNetGateway<
           url: new URL(replacement.url),
         });
       },
-      (current) => this.emitObservation('join', current),
+      (current) => this.observe('join', current),
     );
   }
 
@@ -297,52 +297,60 @@ export class NetherNetGateway<
     middleware: readonly GatewayMiddleware<CTX>[],
     context: CTX,
     replace?: ReplaceContext<CTX>,
-    beforeProxy?: (context: CTX) => void,
+    observe?: (context: CTX) => Observation,
   ): Promise<Response> {
+    // Snapshot the forwarded request, but emit only once the final response is known.
+    let observation: Observation | undefined;
+    let response: Response;
     try {
-      return await runMiddleware(
+      response = await runMiddleware(
         middleware,
         context,
         (current) => {
-          beforeProxy?.(current);
+          observation = observe?.(current);
           return this.proxy(current);
         },
         replace,
       );
     } catch (error) {
       this.emitRequestError('middleware', error, context.req.method, context.req.url);
-      return new Response('Internal Server Error', { status: 500 });
+      response = new Response('Internal Server Error', { status: 500 });
     }
+    observation?.(response.status);
+    return response;
   }
 
-  private emitObservation(event: 'info', context: ServerInfoContext): void;
-  private emitObservation(event: 'join', context: JoinContext): void;
-  private emitObservation(event: 'info' | 'join', context: GatewayContext): void {
+  private observe(event: 'info', context: ServerInfoContext): Observation;
+  private observe(event: 'join', context: JoinContext): Observation;
+  private observe(event: 'info' | 'join', context: GatewayContext): Observation {
     const url = requestTarget(context.req.url);
-    const common: NetherNetGatewayInfoEvent = {
+    const common = {
       url,
       remoteAddress: context.remoteAddress,
       headers: new Headers(context.req.headers),
     };
-    try {
-      if (event === 'join') {
-        const join = context as JoinContext;
-        (this as EventEmitter<NetherNetGatewayEvents>).emit('join', {
-          ...common,
-          networkId: join.networkId,
-          untrustedIdentity: join.untrustedIdentity,
-          identity: join.identity,
-        });
-      } else {
-        this.emit('info', common);
-      }
-    } catch (error) {
+    return (status) => {
       try {
-        this.emitRequestError('listener', error, context.req.method, url);
-      } catch {
-        // Even a failing error observer must not change the HTTP result.
+        if (event === 'join') {
+          const join = context as JoinContext;
+          (this as EventEmitter<NetherNetGatewayEvents>).emit('join', {
+            ...common,
+            status,
+            networkId: join.networkId,
+            untrustedIdentity: join.untrustedIdentity,
+            identity: join.identity,
+          });
+        } else {
+          this.emit('info', { ...common, status });
+        }
+      } catch (error) {
+        try {
+          this.emitRequestError('listener', error, context.req.method, url);
+        } catch {
+          // Even a failing error observer must not change the HTTP result.
+        }
       }
-    }
+    };
   }
 
   private emitRequestError(
@@ -374,6 +382,8 @@ function requestTarget(value: string): string {
     return value;
   }
 }
+
+type Observation = (status: number) => void;
 
 type ReplaceContext<CTX extends GatewayContext> = (
   context: CTX,

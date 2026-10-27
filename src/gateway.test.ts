@@ -333,6 +333,7 @@ describe('NetherNetGateway', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       url: '/v1/join/final',
+      status: 200,
       networkId: 'final',
       identity: undefined,
       untrustedIdentity: { gamertag: 'Player' },
@@ -371,6 +372,35 @@ describe('NetherNetGateway', () => {
     expect(errors).toEqual([
       expect.objectContaining({ source: 'listener', method: 'GET', url: '/v1/join' }),
     ]);
+  });
+
+  it('emits join with the final response status after middleware and upstream failures', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const statuses: number[] = [];
+    let statusAtResponse: number[] | undefined;
+    gateway.use('join', async (c, next) => {
+      const response = await next();
+      statusAtResponse = [...statuses];
+      if (c.networkId === 'rejected') return new Response('Rejected', { status: 409 });
+      if (c.networkId === 'thrown') throw new Error('after upstream');
+      return response;
+    });
+    gateway.on('join', (event) => statuses.push(event.status));
+    const address = await serve(gateway.handleRequest.bind(gateway));
+    const unreachable = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    unreachable.on('join', (event) => statuses.push(event.status));
+    const unreachableAddress = await serve(unreachable.handleRequest.bind(unreachable));
+
+    for (const networkId of ['ok', 'rejected', 'thrown']) {
+      await fetch(`${address}/v1/join/${networkId}`, { method: 'POST', body: untrustedOffer() });
+    }
+    await fetch(`${unreachableAddress}/v1/join/1`, { method: 'POST', body: untrustedOffer() });
+
+    expect(statusAtResponse).toEqual([200, 409]);
+    expect(statuses).toEqual([200, 409, 500, 502]);
   });
 
   it('resolves the upstream from the context after middleware replaces the request', async () => {

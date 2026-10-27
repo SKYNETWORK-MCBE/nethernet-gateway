@@ -295,12 +295,13 @@ gateway.on('info', ({ url }) => {
   console.log('Server information requested:', url);
 });
 
-gateway.on('join', ({ networkId, untrustedIdentity, identity }) => {
-  console.log('Join attempt:', networkId, identity?.gamertag ?? untrustedIdentity.gamertag);
+gateway.on('join', ({ status, networkId, untrustedIdentity, identity }) => {
+  if (status !== 200) return; // the upstream or a middleware rejected the join
+  console.log('Joined:', networkId, identity?.gamertag ?? untrustedIdentity.gamertag);
 });
 ```
 
-These events fire once when a valid request reaches the upstream forwarding step, after middleware has run. They do not fire for early middleware responses or rejected join offers; an upstream failure can still follow an event. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+These events fire once for each valid request forwarded upstream, after the final response is known. They do not fire for early middleware responses or rejected join offers. `status` is the status of the response sent to the client, after every middleware has run: an unreachable upstream gives `502`, and a middleware that replaces the response or throws after `next()` gives its own status or `500`. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
 
 ## Log requests
 

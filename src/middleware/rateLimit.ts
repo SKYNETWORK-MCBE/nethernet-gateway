@@ -1,4 +1,4 @@
-import { isIP } from 'node:net';
+import { isIP } from '../ip';
 import type { Awaitable, GatewayContext, GatewayMiddleware } from '../types';
 
 export type RateLimitKey<CTX extends GatewayContext = GatewayContext> =
@@ -144,7 +144,13 @@ async function resolveKey<CTX extends GatewayContext>(
   context: CTX,
 ): Promise<string | undefined> {
   if (key === 'global') return '';
-  if (key === 'ip') return ipBucketKey(context.remoteAddress);
+  if (key === 'ip') {
+    // Without an address every client would share one bucket, so fail loudly instead.
+    if (!context.remoteAddress) {
+      throw new Error('rateLimit.ip requires remoteAddress; set getConnInfo on the gateway');
+    }
+    return ipBucketKey(context.remoteAddress);
+  }
 
   const value = await key(context);
   if (value !== undefined && typeof value !== 'string') {
@@ -153,8 +159,8 @@ async function resolveKey<CTX extends GatewayContext>(
   return value;
 }
 
-function ipBucketKey(address: string | undefined): string {
-  if (!address || isIP(address) !== 6) return address ?? '';
+function ipBucketKey(address: string): string {
+  if (isIP(address) !== 6) return address;
 
   const [host, zone] = address.split('%', 2);
   const canonical = new URL(`http://[${host}]/`).hostname.slice(1, -1);

@@ -30,8 +30,24 @@ export interface UntrustedNetherNetIdentity {
 
 export type VerifyClientToken = (token: string) => Awaitable<NetherNetIdentity>;
 
+/** An execution context that can extend the request lifetime, such as on Cloudflare Workers. */
+export interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException?(): void;
+}
+
+/** Connection details resolved by a runtime adapter's `getConnInfo`. */
+export interface ConnInfo {
+  readonly remote: {
+    readonly address?: string | undefined;
+  };
+}
+
+/** Resolves connection details from the runtime's request and bindings. */
+export type GetConnInfo = (c: { readonly req: Request; readonly env: unknown }) => ConnInfo;
+
 export interface NetherNetGatewayErrorEvent {
-  readonly source: 'request' | 'middleware' | 'upstream' | 'response' | 'listener';
+  readonly source: 'request' | 'middleware' | 'upstream' | 'listener';
   readonly error: unknown;
   readonly method: string;
   readonly url: string;
@@ -92,8 +108,15 @@ export type NetherNetGatewayJoinEvent<Verified extends boolean = boolean> =
 export interface GatewayContext {
   readonly req: Request;
   readonly url: URL;
-  /** The direct peer address. Use a custom key generator when running behind a trusted proxy. */
+  /**
+   * The peer address resolved by the gateway's `getConnInfo`, or `undefined` without one.
+   * Use a custom key generator when running behind a trusted proxy.
+   */
   readonly remoteAddress: string | undefined;
+  /** The runtime-specific second `fetch` argument, such as bindings or server information. */
+  readonly env: unknown;
+  /** The runtime-specific third `fetch` argument, if the runtime passes one. */
+  readonly executionCtx: ExecutionContext | undefined;
 }
 
 export interface ServerInfoContext extends GatewayContext {

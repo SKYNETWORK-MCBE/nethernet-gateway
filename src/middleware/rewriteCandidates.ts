@@ -1,4 +1,4 @@
-import { BlockList, isIP } from 'node:net';
+import { isIP, SubnetList } from '../ip';
 import type { GatewayMiddleware, JoinContext } from '../types';
 
 const CANDIDATE_PREFIX = 'a=candidate:';
@@ -8,9 +8,8 @@ const [TRANSPORT, ADDRESS, PORT, TYPE] = [2, 4, 5, 7];
 // Port 0 matches what libwebrtc writes when it hides a related address; RFC 8839 §5.1 asks for 9.
 const MASKED_PORT = 0;
 
-// The ranges a remote client cannot reach, matched by node:net rather than by hand.
-const PRIVATE = new BlockList();
-for (const subnet of [
+// The ranges a remote client cannot reach.
+const PRIVATE = new SubnetList([
   '0.0.0.0/8',
   '10.0.0.0/8',
   '100.64.0.0/10', // CGNAT
@@ -26,10 +25,7 @@ for (const subnet of [
   'fe80::/10',
   'fec0::/10', // deprecated site-local
   'ff00::/8', // multicast
-]) {
-  const [address, prefix] = subnet.split('/');
-  PRIVATE.addSubnet(address, Number(prefix), address.includes(':') ? 'ipv6' : 'ipv4');
-}
+]);
 
 export interface CandidateAddress {
   ip: string;
@@ -141,8 +137,7 @@ function parseCandidate(line: string): string[] | undefined {
 
 // Only a global IP literal survives: a name, such as an mDNS one, cannot be checked.
 function isPrivateAddress(address: string): boolean {
-  const family = isIP(address);
-  return family === 0 || PRIVATE.check(address, family === 4 ? 'ipv4' : 'ipv6');
+  return isIP(address) === 0 || PRIVATE.has(address);
 }
 
 // ICE uses the related address for diagnostics only, and it exposes the peer's own address.

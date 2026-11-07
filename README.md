@@ -2,7 +2,7 @@
 
 A middleware-first proxy for Minecraft NetherNet HTTP signaling.
 
-`nethernet-gateway` handles the two NetherNet signaling operations and delegates HTTP forwarding to [`httpxy`](https://github.com/unjs/httpxy):
+`nethernet-gateway` handles the two NetherNet signaling operations and forwards them upstream with the Fetch API, so it runs on Node.js and on Cloudflare Workers:
 
 - `GET /v1/join` — server information
 - `POST /v1/join/{networkId}` — SDP offer and answer exchange
@@ -25,15 +25,77 @@ bun add nethernet-gateway
 
 Every join offer must include a structurally valid client identity assertion. Cryptographic verification against a trusted token issuer is opt-in.
 
+Like a Hono app, the gateway exposes a `fetch(request, env, executionCtx)` handler that runs on any
+runtime with the Fetch API. Each runtime's subpath exports `getConnInfo`, which reads the client
+address from the arguments that runtime passes to `fetch`.
+
+### Bun
+
 ```ts
 import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo } from 'nethernet-gateway/bun';
 
 const gateway = new NetherNetGateway({
   upstream: 'http://127.0.0.1:19132',
+  getConnInfo,
 });
 
-await gateway.listen(8080);
+export default { port: 8080, fetch: gateway.fetch };
 ```
+
+### Deno
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo } from 'nethernet-gateway/deno';
+
+const gateway = new NetherNetGateway({
+  upstream: 'http://127.0.0.1:19132',
+  getConnInfo,
+});
+
+Deno.serve({ port: 8080 }, gateway.fetch);
+```
+
+### Node.js
+
+Node.js has no Fetch-based server, so `nethernet-gateway/node` also provides `serve`.
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo, serve } from 'nethernet-gateway/node';
+
+const gateway = new NetherNetGateway({
+  upstream: 'http://127.0.0.1:19132',
+  getConnInfo,
+});
+
+serve({ fetch: gateway.fetch, port: 8080 });
+```
+
+`serve` returns the `node:http` `Server`. To use an existing server, pass
+`getRequestListener(gateway.fetch)` to `createServer`.
+
+### Cloudflare Workers
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo } from 'nethernet-gateway/cloudflare-workers';
+
+const gateway = new NetherNetGateway({
+  upstream: (c) => (c.env as Env).UPSTREAM,
+  getConnInfo,
+});
+
+export default gateway;
+```
+
+The upstream must be reachable from Cloudflare, for example through a Cloudflare Tunnel. Only the
+signaling goes through the Worker; the game connection still runs directly between the client and
+BDS. The `nodejs_compat` flag is not required.
+
+`getConnInfo` sets `c.remoteAddress`. Without it, `remoteAddress` is `undefined`. Each middleware
+can also read the second and third `fetch` arguments as `c.env` and `c.executionCtx`.
 
 Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
@@ -72,12 +134,17 @@ gateway.use(async (c, next) => {
 
 Every join request that reaches BDS may reserve a UDP port. An attacker can exhaust the configured
 port range by repeatedly requesting offers, so use `rateLimit` to limit join requests. The limiter
-uses a sliding window and can apply multiple limits to each request.
+uses a sliding window and can apply multiple limits to each request. `rateLimit.ip` needs a
+gateway with `getConnInfo`; without it, the request fails with `500` instead of sharing one bucket.
+
+The counters live in memory. On Cloudflare Workers each isolate keeps its own counters, so use a
+`custom` rule backed by Durable Objects or the Workers Rate Limiting binding instead.
 
 ```ts
 import { NetherNetGateway, rateLimit } from 'nethernet-gateway';
+import { getConnInfo } from 'nethernet-gateway/node';
 
-const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:19132' });
+const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:19132', getConnInfo });
 gateway.use(
   'join',
   rateLimit({
@@ -121,7 +188,7 @@ gateway.use(
 );
 ```
 
-The built-in `ip` key limits each direct TCP peer by IPv4 address or IPv6 `/64` prefix. IPv4-mapped
+The built-in `ip` key limits each peer reported by `getConnInfo` by IPv4 address or IPv6 `/64` prefix. IPv4-mapped
 IPv6 addresses share the corresponding IPv4 counter. Peers within the same IPv6 `/64` share a
 counter. The `global` key limits the total request rate. Choose limits appropriate for the paths
 covered by each middleware. A request must have capacity under every applicable rule before it
@@ -273,24 +340,11 @@ When no candidate survives, the answer is returned unchanged, private candidates
 
 The related address of a reflexive or relayed candidate exposes the upstream server's own address. By default it is replaced with `0.0.0.0` or `::` and port `0`. Pass an object to replace only the `ip` or `port` it sets, leaving the other field as the upstream sent it, or `false` to keep the related address. A `port` that is not an integer from 0 to 65535 makes `rewriteCandidates` throw a `RangeError`. Error responses from the upstream server are passed through unchanged.
 
-## Use an existing Node server
-
-Bind `handleRequest` to the gateway when passing it to `createServer`.
-
-```ts
-import { createServer } from 'node:http';
-import { NetherNetGateway } from 'nethernet-gateway';
-
-const gateway = new NetherNetGateway({
-  upstream: 'http://127.0.0.1:19132',
-});
-
-createServer(gateway.handleRequest.bind(gateway)).listen(8080);
-```
-
 ## Observe request errors
 
-Unexpected request, middleware, upstream, and response failures are emitted for logging and metrics.
+Unexpected request, middleware, and upstream failures are emitted for logging and metrics. Failures
+to read a Node.js request or write its response are passed to the `onError` option of `serve` or
+`getRequestListener`.
 
 ```ts
 gateway.on('requestError', ({ source, error, method, url }) => {
@@ -342,7 +396,7 @@ gateway.use(logger((line) => appLogger.info(line)));
 - Put the public signaling endpoint behind HTTPS. TLS termination is outside this package.
 - `untrustedIdentity` is decoded client input, not an authenticated identity. Never use it for authorization.
 - When `verifyClientToken` is configured, invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
-- Request bodies larger than 1 MiB are rejected with `413` before middleware runs. SDP offers must also be valid UTF-8.
+- On Node.js, request bodies larger than 1 MiB are rejected with `413` before middleware runs. On every runtime, SDP offers larger than 1 MiB are rejected with `413` and must be valid UTF-8.
 - To hide the addresses of the backend, use `rewriteCandidates` with `mapAddress` and `fallback: 'drop'`. (See the "Rewrite ICE candidates" section.)
 
 ## Acknowledgements

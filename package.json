@@ -20,7 +20,11 @@
   "type": "module",
   "exports": {
     ".": "./dist/index.mjs",
+    "./bun": "./dist/bun/index.mjs",
+    "./cloudflare-workers": "./dist/cloudflare-workers/index.mjs",
+    "./deno": "./dist/deno/index.mjs",
     "./minecraft": "./dist/minecraft/index.mjs",
+    "./node": "./dist/node/index.mjs",
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -31,7 +35,6 @@
     "prepare": "vp config"
   },
   "dependencies": {
-    "httpxy": "^0.5.5",
     "jose": "^6.2.12",
     "valibot": "1.5.0"
   },

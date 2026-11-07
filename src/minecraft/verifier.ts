@@ -1,6 +1,6 @@
-import { createPublicKey } from 'node:crypto';
-import { createRemoteJWKSet, exportJWK, jwtVerify, type JWK } from 'jose';
+import { createRemoteJWKSet, jwtVerify, type JWK } from 'jose';
 import * as v from 'valibot';
+import { decodeBase64 } from '../base64';
 import type { NetherNetIdentity, VerifyClientToken } from '../types';
 import { minecraftIdentityClaimEntries, normalizeMinecraftIdentityClaims } from './claims';
 
@@ -61,12 +61,21 @@ export function createMinecraftClientTokenVerifier(
 
 async function parseClientPublicKey(value: unknown): Promise<JWK> {
   if (typeof value === 'string') {
-    const key = createPublicKey({
-      key: Buffer.from(value, 'base64'),
-      format: 'der',
-      type: 'spki',
-    });
-    return validateClientPublicKey(await exportJWK(key));
+    let jwk: JsonWebKey;
+    try {
+      const key = await crypto.subtle.importKey(
+        'spki',
+        decodeBase64(value),
+        { name: 'ECDSA', namedCurve: 'P-384' },
+        true,
+        ['verify'],
+      );
+      jwk = await crypto.subtle.exportKey('jwk', key);
+    } catch {
+      throw new Error('Invalid GameServerToken client public key');
+    }
+    const { kty, crv, x, y } = jwk;
+    return validateClientPublicKey({ kty, crv, x, y });
   }
   return validateClientPublicKey(value);
 }

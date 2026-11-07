@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vite-plus/test';
+import { getRequestListener } from '../node';
 import { NetherNetGateway } from '../gateway';
 import { createTestServers, untrustedOffer } from '../test-helpers';
 import type { JoinContext } from '../types';
@@ -341,7 +342,7 @@ describe('rewriteCandidates', () => {
     });
     const gateway = new NetherNetGateway({ upstream });
     gateway.use('join', rewriteCandidates({ mapAddress: ADVERTISE }));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const offer = untrustedOffer(['v=0', ...HOSTS].join('\r\n'));
 
     const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
@@ -397,6 +398,8 @@ function context(offer: string): JoinContext {
     req,
     url: new URL(req.url),
     remoteAddress: '192.0.2.1',
+    env: undefined,
+    executionCtx: undefined,
     networkId: '1',
     offer,
     untrustedIdentity: { xuid: '0', playFabId: '0', gamertag: 'Player', claims: {} },

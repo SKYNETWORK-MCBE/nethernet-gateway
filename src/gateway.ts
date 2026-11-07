@@ -1,11 +1,11 @@
-import EventEmitter from 'node:events';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { proxyFetch } from 'httpxy';
+import { Emitter } from './emitter';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 import { extractUntrustedClientIdentity, verifyClientIdentity } from './identity';
-import { createRequest, readBody, writeResponse, writeResponseWhileDraining } from './http';
+import { readBody } from './http';
 import type {
   ClientInfo,
+  ExecutionContext,
+  GetConnInfo,
   GatewayMiddleware,
   GatewayContext,
   JoinContext,
@@ -26,6 +26,11 @@ export interface NetherNetGatewayEvents<Verified extends boolean = boolean> {
 export interface NetherNetGatewayOptions {
   upstream: string | ((ctx: GatewayContext) => string);
   verifyClientToken?: VerifyClientToken;
+  /**
+   * Resolves `remoteAddress` from the request and `env`. Pass the `getConnInfo` exported by the
+   * subpath for your runtime, such as `nethernet-gateway/bun`.
+   */
+  getConnInfo?: GetConnInfo;
 }
 
 export type IsVerified<Options extends NetherNetGatewayOptions> = Options extends {
@@ -39,13 +44,12 @@ export type IsVerified<Options extends NetherNetGatewayOptions> = Options extend
     : boolean;
 export class NetherNetGateway<
   out Options extends NetherNetGatewayOptions = NetherNetGatewayOptions,
-> extends EventEmitter<NetherNetGatewayEvents<IsVerified<Options>>> {
+> extends Emitter<NetherNetGatewayEvents<IsVerified<Options>>> {
   readonly options: Readonly<NetherNetGatewayOptions>;
 
   private readonly infoMiddlewares: GatewayMiddleware<ServerInfoContext>[] = [];
   private readonly joinMiddlewares: GatewayMiddleware<JoinContext>[] = [];
   private readonly requestMiddlewares: GatewayMiddleware[] = [];
-  server?: Server;
 
   constructor(options: Options);
   constructor(options: Options) {
@@ -83,99 +87,49 @@ export class NetherNetGateway<
     return this;
   }
 
-  async handleRequest(incoming: IncomingMessage, response: ServerResponse): Promise<void> {
-    const method = incoming.method ?? 'UNKNOWN';
-    const url = incoming.url ?? '/';
-    let drainAfterResponse = false;
-
-    let result: Response;
+  /**
+   * Handles a Fetch API request with the runtime's own arguments. It is bound to the gateway, so
+   * it can be passed to any server that takes a Fetch handler.
+   */
+  readonly fetch = async (
+    request: Request,
+    env?: unknown,
+    executionCtx?: ExecutionContext,
+  ): Promise<Response> => {
+    const { method, url } = request;
     if (method === 'CONNECT' || method === 'TRACE' || method === 'TRACK') {
-      incoming.resume();
-      result = new Response('Not Found', { status: 404 });
-    } else {
-      try {
-        const request = await createRequest(incoming);
-        const context: GatewayContext = {
-          req: request,
-          url: new URL(request.url),
-          remoteAddress: incoming.socket.remoteAddress,
-        };
-
-        try {
-          result = await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
-            try {
-              return await this.dispatch(requestContext);
-            } catch (error) {
-              this.emitRequestError('request', error, method, url);
-              return new Response('Internal Server Error', { status: 500 });
-            }
-          });
-        } catch (error) {
-          this.emitRequestError('middleware', error, method, url);
-          result = new Response('Internal Server Error', { status: 500 });
-        }
-      } catch (error) {
-        if (error instanceof RequestTooLargeError) {
-          // Keep the connection alive until the 413 is flushed, then discard the remaining body.
-          // Closing before that can make unread TCP data turn the response into an ECONNRESET.
-          drainAfterResponse = true;
-          result = new Response('Request body is too large', { status: 413 });
-        } else {
-          this.emitRequestError('request', error, method, url);
-          result = new Response('Internal Server Error', { status: 500 });
-        }
-      }
+      return new Response('Not Found', { status: 404 });
     }
 
+    let context: GatewayContext;
     try {
-      if (drainAfterResponse) await writeResponseWhileDraining(incoming, response, result);
-      else await writeResponse(response, result);
+      context = {
+        req: mutableRequest(request),
+        url: new URL(url),
+        // Bun looks the address up by the original request object.
+        remoteAddress: this.options.getConnInfo?.({ req: request, env }).remote.address,
+        env,
+        executionCtx,
+      };
     } catch (error) {
-      this.emitRequestError('response', error, method, url);
-      if (!response.headersSent) {
-        try {
-          await writeResponse(response, new Response('Internal Server Error', { status: 500 }));
-        } catch (fallbackError) {
-          this.emitRequestError('response', fallbackError, method, url);
-          response.destroy();
-        }
-      } else {
-        response.destroy();
-      }
+      this.emitRequestError('request', error, method, url);
+      return new Response('Internal Server Error', { status: 500 });
     }
-  }
-
-  async listen(port: number, host?: string): Promise<void> {
-    if (this.server) {
-      throw new Error('NetherNetGateway is already listening');
-    }
-
-    const server = createServer(this.handleRequest.bind(this));
-    this.server = server;
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(port, host, () => {
-          server.off('error', reject);
-          resolve();
-        });
+      return await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
+        try {
+          return await this.dispatch(requestContext);
+        } catch (error) {
+          this.emitRequestError('request', error, method, url);
+          return new Response('Internal Server Error', { status: 500 });
+        }
       });
     } catch (error) {
-      this.server = undefined;
-      throw error;
+      this.emitRequestError('middleware', error, method, url);
+      return new Response('Internal Server Error', { status: 500 });
     }
-  }
-
-  async close(): Promise<void> {
-    const server = this.server;
-    if (!server) return;
-
-    this.server = undefined;
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-  }
+  };
 
   private async dispatch(requestContext: GatewayContext): Promise<Response> {
     const { req } = requestContext;
@@ -247,7 +201,6 @@ export class NetherNetGateway<
       method: request.method,
       headers,
       body,
-      signal: request.signal,
     });
 
     let untrustedIdentity;
@@ -285,15 +238,23 @@ export class NetherNetGateway<
         typeof this.options.upstream === 'function'
           ? this.options.upstream(context)
           : this.options.upstream;
-      if (!request.body) return await proxyFetch(upstream, request);
+      const target = upstreamUrl(upstream, new URL(request.url));
 
-      // BDS requires a content length and does not read httpxy's chunked request body.
-      const body = Buffer.from(await request.arrayBuffer());
       const headers = new Headers(request.headers);
-      headers.delete('transfer-encoding');
-      headers.set('content-length', String(body.byteLength));
+      // The runtime derives these from the target URL and the buffered body.
+      for (const name of ['host', 'content-length', 'transfer-encoding', ...HOP_BY_HOP]) {
+        headers.delete(name);
+      }
+      // BDS requires a content length and does not read a chunked request body, so buffer it.
+      const body = request.body ? await request.arrayBuffer() : undefined;
 
-      return await proxyFetch(upstream, request, { body, headers });
+      const response = await fetch(target, {
+        method: request.method,
+        headers,
+        body,
+        redirect: 'manual',
+      });
+      return forwardResponse(response);
     } catch (error) {
       this.emitRequestError('upstream', error, request.method, request.url);
       return new Response('Bad Gateway', { status: 502 });
@@ -340,7 +301,7 @@ export class NetherNetGateway<
       try {
         if (event === 'join') {
           const join = context as JoinContext;
-          (this as EventEmitter<NetherNetGatewayEvents>).emit('join', {
+          (this as Emitter<NetherNetGatewayEvents>).emit('join', {
             ...common,
             status,
             networkId: join.networkId,
@@ -383,6 +344,44 @@ export class NetherNetGateway<
       }
     }
   }
+}
+
+// Runtime servers such as Deno and Workers pass immutable headers. Copy from the URL rather than
+// the Request so the copy does not follow its signal, which Deno aborts once the response is sent.
+function mutableRequest(request: Request): Request {
+  return new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+    duplex: 'half',
+  } as RequestInit);
+}
+
+const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'upgrade'];
+
+function upstreamUrl(upstream: string, requestUrl: URL): URL {
+  const target = new URL(upstream);
+  // Requests are forwarded below the upstream's base path.
+  const basePath = target.pathname.replace(/\/+$/u, '');
+  target.pathname = basePath + requestUrl.pathname;
+  target.search = requestUrl.search;
+  return target;
+}
+
+function forwardResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const name of ['transfer-encoding', ...HOP_BY_HOP]) headers.delete(name);
+  // Fetch decodes compressed bodies, so these headers no longer describe the body it returns.
+  if (headers.has('content-encoding')) {
+    headers.delete('content-encoding');
+    headers.delete('content-length');
+  }
+  const hasBody = response.status !== 204 && response.status !== 304;
+  return new Response(hasBody ? response.body : null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function requestTarget(value: string): string {

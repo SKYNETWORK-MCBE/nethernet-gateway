@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vite-plus/test';
+import { getConnInfo, getRequestListener } from '../node';
 import { NetherNetGateway } from '../gateway';
 import { createTestServers, untrustedOffer } from '../test-helpers';
 import type { GatewayContext } from '../types';
@@ -13,7 +14,7 @@ afterEach(async () => {
 
 function context(remoteAddress = '192.0.2.1'): GatewayContext {
   const req = new Request('http://localhost/test');
-  return { req, url: new URL(req.url), remoteAddress };
+  return { req, url: new URL(req.url), remoteAddress, env: undefined, executionCtx: undefined };
 }
 
 describe('rateLimit', () => {
@@ -204,22 +205,36 @@ describe('rateLimit', () => {
     expect(() => rateLimit(options as RateLimitOptions)).toThrow(name);
   });
 
-  it('uses the gateway connection address by default', async () => {
+  it('refuses an ip rule when the gateway has no getConnInfo', async () => {
     const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    gateway.use(rateLimit({ windowMs: 60_000, rules: [rateLimit.ip(1)] }));
+    const errors: unknown[] = [];
+    gateway.on('requestError', (event) => errors.push(event.error));
+
+    const response = await gateway.fetch(new Request('http://localhost/missing'));
+
+    expect(response.status).toBe(500);
+    expect(errors).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('getConnInfo') }),
+    ]);
+  });
+
+  it('uses the gateway connection address by default', async () => {
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1', getConnInfo });
     gateway.use(
       rateLimit({
         windowMs: 60_000,
         rules: [rateLimit.ip(1)],
       }),
     );
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     expect((await fetch(`${address}/missing`)).status).toBe(404);
     expect((await fetch(`${address}/missing`)).status).toBe(429);
   });
 
   it('passes the gateway connection address to info and join middleware', async () => {
-    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1', getConnInfo });
     const seen: string[] = [];
     gateway.use('info', (c) => {
       seen.push(c.remoteAddress ?? 'undefined');
@@ -229,7 +244,7 @@ describe('rateLimit', () => {
       seen.push(c.remoteAddress ?? 'undefined');
       return new Response('OK');
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     expect((await fetch(`${address}/v1/join`)).status).toBe(200);
     expect(

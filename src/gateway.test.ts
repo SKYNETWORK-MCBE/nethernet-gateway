@@ -15,6 +15,7 @@ import {
   untrustedOffer,
 } from './test-helpers';
 import type {
+  ClientInfo,
   JoinContext,
   NetherNetGatewayErrorEvent,
   NetherNetGatewayInfoEvent,
@@ -290,6 +291,73 @@ describe('NetherNetGateway', () => {
     expect(seen[0].url).toBe('/v1/join?changed=1');
     expect(seen[0].remoteAddress).toBeDefined();
     expect(forwarded).toBe('middleware');
+  });
+
+  it('parses client info from the info query into the context and event', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    const contexts: ClientInfo[] = [];
+    const events: ClientInfo[] = [];
+    gateway.use('info', (c, next) => {
+      contexts.push(c.client);
+      return next();
+    });
+    gateway.on('info', (event) => events.push(event.client));
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    await fetch(
+      `${address}/v1/join?version=1.26.60.30&protocol=2225&platform=8&id=5779639000310264761`,
+    );
+    await fetch(`${address}/v1/join`);
+    await fetch(`${address}/v1/join?version=&protocol=abc&platform=-1&id=`);
+
+    const full = {
+      version: '1.26.60.30',
+      protocol: 2225,
+      platform: 8,
+      networkId: '5779639000310264761',
+    };
+    const empty = {
+      version: undefined,
+      protocol: undefined,
+      platform: undefined,
+      networkId: undefined,
+    };
+    expect(contexts).toEqual([full, empty, empty]);
+    expect(events).toEqual([full, empty, empty]);
+  });
+
+  it('parses client info again from a replacement info request', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
+    });
+    const gateway = new NetherNetGateway({ upstream });
+    let replaced: ClientInfo | undefined;
+    gateway.use('info', (c, next) =>
+      next(new Request(new URL('/v1/join?version=1.26.60.30&protocol=2225', c.req.url))),
+    );
+    gateway.use('info', (c, next) => {
+      replaced = c.client;
+      return next();
+    });
+    let observed: ClientInfo | undefined;
+    gateway.on('info', (event) => {
+      observed = event.client;
+    });
+    const address = await serve(gateway.handleRequest.bind(gateway));
+
+    await fetch(`${address}/v1/join?version=1.26.50.20&platform=8`);
+
+    const expected = {
+      version: '1.26.60.30',
+      protocol: 2225,
+      platform: undefined,
+      networkId: undefined,
+    };
+    expect(replaced).toEqual(expected);
+    expect(observed).toEqual(expected);
   });
 
   it('emits join once after replacement and verification, but not for rejected requests', async () => {

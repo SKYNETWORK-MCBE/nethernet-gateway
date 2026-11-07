@@ -5,6 +5,7 @@ import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 import { extractUntrustedClientIdentity, verifyClientIdentity } from './identity';
 import { createRequest, readBody, writeResponse, writeResponseWhileDraining } from './http';
 import type {
+  ClientInfo,
   GatewayMiddleware,
   GatewayContext,
   JoinContext,
@@ -182,8 +183,14 @@ export class NetherNetGateway<
     const context: GatewayContext = { ...requestContext, req, url };
 
     if (req.method === 'GET' && url.pathname === '/v1/join') {
-      return this.middleware(this.infoMiddlewares, context, undefined, (current) =>
-        this.observe('info', current),
+      return this.middleware(
+        this.infoMiddlewares,
+        { ...context, client: clientInfo(url) },
+        async (current, replacement) => {
+          const url = new URL(replacement.url);
+          return { ...current, req: replacement, url, client: clientInfo(url) };
+        },
+        (current) => this.observe('info', current),
       );
     }
 
@@ -341,7 +348,11 @@ export class NetherNetGateway<
             identity: join.identity,
           });
         } else {
-          this.emit('info', { ...common, status });
+          this.emit('info', {
+            ...common,
+            status,
+            client: (context as ServerInfoContext).client,
+          });
         }
       } catch (error) {
         try {
@@ -381,6 +392,22 @@ function requestTarget(value: string): string {
   } catch {
     return value;
   }
+}
+
+function clientInfo(url: URL): ClientInfo {
+  const params = url.searchParams;
+  return {
+    version: params.get('version') || undefined,
+    protocol: integer(params.get('protocol')),
+    platform: integer(params.get('platform')),
+    networkId: params.get('id') || undefined,
+  };
+}
+
+function integer(value: string | null): number | undefined {
+  if (value === null || !/^\d+$/u.test(value)) return undefined;
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : undefined;
 }
 
 type Observation = (status: number) => void;

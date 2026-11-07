@@ -182,6 +182,22 @@ gateway.use('info', async (_c, next) => {
 });
 ```
 
+### Read client information
+
+Minecraft 1.26.60 and later send the client's version, protocol, platform, and Network ID as query parameters of the server information request. The gateway parses them into `c.client`:
+
+```ts
+gateway.use('info', (c, next) => {
+  console.log(c.client.version); // '1.26.60.30'
+  console.log(c.client.protocol); // 2225
+  console.log(c.client.platform); // 8
+  console.log(c.client.networkId); // the Network ID of the client's following join request
+  return next();
+});
+```
+
+Older clients, and some requests from newer ones, send no query parameters. A missing or malformed value is `undefined`, and the request is still forwarded. A replacement request passed to `next()` is parsed again. The values are supplied by the client and can be forged.
+
 ### Read untrusted client identity
 
 Every join offer must contain a structurally valid Minecraft identity token. The gateway decodes its XUID and PlayFab ID without requiring a verifier. These values are supplied by the client and have not been authenticated, so use them only for diagnostics, display, or other non-security-sensitive purposes.
@@ -291,8 +307,8 @@ Authentication failures and other expected `4xx` responses are not emitted.
 Use `info` and `join` events to log requests without using middleware or changing the request:
 
 ```ts
-gateway.on('info', ({ url }) => {
-  console.log('Server information requested:', url);
+gateway.on('info', ({ url, client }) => {
+  console.log('Server information requested:', url, client.version);
 });
 
 gateway.on('join', ({ status, networkId, untrustedIdentity, identity }) => {
@@ -301,7 +317,7 @@ gateway.on('join', ({ status, networkId, untrustedIdentity, identity }) => {
 });
 ```
 
-These events fire once for each valid request forwarded upstream, after the final response is known. They do not fire for early middleware responses or rejected join offers. `status` is the status of the response sent to the client, after every middleware has run: an unreachable upstream gives `502`, and a middleware that replaces the response or throws after `next()` gives its own status or `500`. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `join` also includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+These events fire once for each valid request forwarded upstream, after the final response is known. They do not fire for early middleware responses or rejected join offers. `status` is the status of the response sent to the client, after every middleware has run: an unreachable upstream gives `502`, and a middleware that replaces the response or throws after `next()` gives its own status or `500`. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `info` also includes the final `client` information, and `join` includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
 
 ## Log requests
 

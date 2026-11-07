@@ -37,13 +37,34 @@ export interface NetherNetGatewayErrorEvent {
   readonly url: string;
 }
 
-/** A server information request that was forwarded upstream. Headers are a detached snapshot. */
-export interface NetherNetGatewayInfoEvent {
+/**
+ * Query parameters a client sends with a server information request (Minecraft 1.26.60 and later).
+ * Older clients and some requests send none, and an absent or malformed value is `undefined`.
+ * The values are client-supplied and may be forged.
+ */
+export interface ClientInfo {
+  /** Game version, such as `1.26.60.30`. */
+  readonly version: string | undefined;
+  /** Network protocol version. */
+  readonly protocol: number | undefined;
+  /** Client build platform. */
+  readonly platform: number | undefined;
+  /** The client's Network ID, which its following join request uses. */
+  readonly networkId: string | undefined;
+}
+
+/** Fields shared by the `info` and `join` events. Headers are a detached snapshot. */
+export interface NetherNetGatewayRequestEvent {
   readonly url: string;
   readonly remoteAddress: string | undefined;
   readonly headers: Headers;
   /** Status of the final response sent to the client, after every middleware has run. */
   readonly status: number;
+}
+
+/** A server information request that was forwarded upstream. Headers are a detached snapshot. */
+export interface NetherNetGatewayInfoEvent extends NetherNetGatewayRequestEvent {
+  readonly client: ClientInfo;
 }
 
 /**
@@ -58,7 +79,7 @@ export type JoinIdentity<Verified extends boolean = boolean> = [Verified] extend
     : { readonly identity?: NetherNetIdentity | undefined };
 
 /** A join event without its verified identity; see {@link NetherNetGatewayJoinEvent}. */
-export interface NetherNetGatewayJoinEventBase extends NetherNetGatewayInfoEvent {
+export interface NetherNetGatewayJoinEventBase extends NetherNetGatewayRequestEvent {
   readonly networkId: string;
   /** Client-supplied claims that may be forged. Never use these for authorization. */
   readonly untrustedIdentity: UntrustedNetherNetIdentity;
@@ -75,7 +96,9 @@ export interface GatewayContext {
   readonly remoteAddress: string | undefined;
 }
 
-export interface ServerInfoContext extends GatewayContext {}
+export interface ServerInfoContext extends GatewayContext {
+  readonly client: ClientInfo;
+}
 
 /** A join context without its verified identity; see {@link JoinContext}. */
 export interface JoinContextBase extends GatewayContext {

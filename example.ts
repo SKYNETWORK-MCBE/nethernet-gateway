@@ -8,8 +8,8 @@ const gateway = new NetherNetGateway({
 
 gateway.use(logger());
 
-gateway.on('info', ({ url }) => {
-  console.log('Server information requested:', url);
+gateway.on('info', ({ url, client }) => {
+  console.log('Server information requested:', url, client);
 });
 
 gateway.on('join', ({ status, networkId, identity, untrustedIdentity }) => {

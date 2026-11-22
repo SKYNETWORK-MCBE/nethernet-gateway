@@ -346,8 +346,8 @@ export class NetherNetGateway<
   }
 }
 
-// Runtime servers such as Deno and Workers pass immutable headers. Copy from the URL rather than
-// the Request so the copy does not follow its signal, which Deno aborts once the response is sent.
+// Runtime servers such as Cloudflare Workers pass immutable headers. Copy from the URL rather than
+// the Request so the copy does not follow its signal, which some runtimes abort once they respond.
 function mutableRequest(request: Request): Request {
   return new Request(request.url, {
     method: request.method,

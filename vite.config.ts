@@ -9,7 +9,6 @@ export default defineConfig({
       'src/node/index.ts',
       'src/bun/index.ts',
       'src/cloudflare-workers/index.ts',
-      'src/deno/index.ts',
     ],
     exports: true,
   },

@@ -934,7 +934,7 @@ describe('NetherNetGateway', () => {
     expect(() => use('unknown', () => new Response())).toThrow(/Unknown middleware selector/u);
   });
 
-  it('accepts requests with immutable headers, as Deno and Workers pass them', async () => {
+  it('accepts requests with immutable headers, as Workers passes them', async () => {
     const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
     gateway.use((c, next) => {
       c.req.headers.set('x-global', 'global');

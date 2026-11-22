@@ -3,7 +3,7 @@ import { RequestTooLargeError } from '../errors';
 import type { ConnInfo, ExecutionContext } from '../types';
 import { createRequest, writeResponse, writeResponseWhileDraining } from './http';
 
-/** The bindings the Node.js adapter passes as `env`, like `@hono/node-server`. */
+/** The bindings the Node.js adapter passes as `env`. */
 export interface NodeBindings {
   incoming: IncomingMessage;
   outgoing: ServerResponse;
@@ -78,7 +78,7 @@ export function getRequestListener(
   };
 }
 
-/** Starts a `node:http` server for a Fetch handler, like `serve` from `@hono/node-server`. */
+/** Starts a `node:http` server for a Fetch handler. */
 export function serve(
   options: ServeOptions,
   listeningListener?: (info: { address: string; port: number }) => void,

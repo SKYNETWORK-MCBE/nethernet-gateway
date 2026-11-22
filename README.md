@@ -25,7 +25,7 @@ bun add nethernet-gateway
 
 Every join offer must include a structurally valid client identity assertion. Cryptographic verification against a trusted token issuer is opt-in.
 
-Like a Hono app, the gateway exposes a `fetch(request, env, executionCtx)` handler that runs on any
+The gateway exposes a `fetch(request, env, executionCtx)` handler that runs on any
 runtime with the Fetch API. Each runtime's subpath exports `getConnInfo`, which reads the client
 address from the arguments that runtime passes to `fetch`.
 
@@ -41,20 +41,6 @@ const gateway = new NetherNetGateway({
 });
 
 export default { port: 8080, fetch: gateway.fetch };
-```
-
-### Deno
-
-```ts
-import { NetherNetGateway } from 'nethernet-gateway';
-import { getConnInfo } from 'nethernet-gateway/deno';
-
-const gateway = new NetherNetGateway({
-  upstream: 'http://127.0.0.1:19132',
-  getConnInfo,
-});
-
-Deno.serve({ port: 8080 }, gateway.fetch);
 ```
 
 ### Node.js

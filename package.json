@@ -22,7 +22,6 @@
     ".": "./dist/index.mjs",
     "./bun": "./dist/bun/index.mjs",
     "./cloudflare-workers": "./dist/cloudflare-workers/index.mjs",
-    "./deno": "./dist/deno/index.mjs",
     "./minecraft": "./dist/minecraft/index.mjs",
     "./node": "./dist/node/index.mjs",
     "./package.json": "./package.json"

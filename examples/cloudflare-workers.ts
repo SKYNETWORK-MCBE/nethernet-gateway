@@ -11,8 +11,8 @@ interface Env {
   JOIN_XUID_LIMITER: RateLimitBinding;
 }
 
-const gateway = new NetherNetGateway({
-  upstream: (c) => (c.env as Env).UPSTREAM,
+const gateway = new NetherNetGateway<{ Bindings: Env }>({
+  upstream: (c) => c.env.UPSTREAM,
   verifyClientToken: createMinecraftClientTokenVerifier(),
   getConnInfo,
 });
@@ -22,8 +22,8 @@ gateway.use(
   'join',
   rateLimitBinding({
     rules: [
-      { limiter: (c) => (c.env as Env).JOIN_IP_LIMITER, key: 'ip' },
-      { limiter: (c) => (c.env as Env).JOIN_XUID_LIMITER, key: (c) => c.identity.xuid },
+      { limiter: (c) => c.env.JOIN_IP_LIMITER, key: 'ip' },
+      { limiter: (c) => c.env.JOIN_XUID_LIMITER, key: (c) => c.identity.xuid },
     ],
     retryAfter: 60,
   }),

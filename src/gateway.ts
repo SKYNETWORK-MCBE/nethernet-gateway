@@ -6,6 +6,7 @@ import type {
   ClientInfo,
   ExecutionContext,
   GetConnInfo,
+  GatewayEnv,
   GatewayMiddleware,
   GatewayContext,
   JoinContext,
@@ -23,8 +24,8 @@ export interface NetherNetGatewayEvents<Verified extends boolean = boolean> {
   join: [event: NetherNetGatewayJoinEvent<Verified>];
 }
 
-export interface NetherNetGatewayOptions {
-  upstream: string | ((ctx: GatewayContext) => string);
+export interface NetherNetGatewayOptions<E extends GatewayEnv = GatewayEnv> {
+  upstream: string | ((ctx: GatewayContext<E>) => string);
   verifyClientToken?: VerifyClientToken;
   /**
    * Resolves `remoteAddress` from the request and `env`. Pass the `getConnInfo` exported by the
@@ -33,42 +34,51 @@ export interface NetherNetGatewayOptions {
   getConnInfo?: GetConnInfo;
 }
 
-export type IsVerified<Options extends NetherNetGatewayOptions> = Options extends {
-  verifyClientToken: VerifyClientToken;
+/**
+ * Creates a gateway. Supply `Bindings` to type `c.env`, as in
+ * `new NetherNetGateway<{ Bindings: Env }>(options)`. Whether `c.identity` is always present follows
+ * from `verifyClientToken`, even when `Bindings` is given.
+ */
+export interface NetherNetGatewayConstructor {
+  new <E extends GatewayEnv = GatewayEnv>(
+    options: NetherNetGatewayOptions<E> & { verifyClientToken: VerifyClientToken },
+  ): NetherNetGateway<E, true>;
+  new <E extends GatewayEnv = GatewayEnv>(
+    options: NetherNetGatewayOptions<E> & { verifyClientToken?: undefined },
+  ): NetherNetGateway<E, false>;
+  new <E extends GatewayEnv = GatewayEnv>(
+    options: NetherNetGatewayOptions<E>,
+  ): NetherNetGateway<E, boolean>;
+  readonly prototype: NetherNetGateway;
 }
-  ? true
-  : Options extends Omit<NetherNetGatewayOptions, 'verifyClientToken'> & {
-        verifyClientToken?: undefined;
-      }
-    ? false
-    : boolean;
-export class NetherNetGateway<
-  out Options extends NetherNetGatewayOptions = NetherNetGatewayOptions,
-> extends Emitter<NetherNetGatewayEvents<IsVerified<Options>>> {
-  readonly options: Readonly<NetherNetGatewayOptions>;
+
+class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitter<
+  NetherNetGatewayEvents<Verified>
+> {
+  readonly options: Readonly<NetherNetGatewayOptions<E>>;
 
   private readonly infoMiddlewares: GatewayMiddleware<ServerInfoContext>[] = [];
   private readonly joinMiddlewares: GatewayMiddleware<JoinContext>[] = [];
   private readonly requestMiddlewares: GatewayMiddleware[] = [];
 
-  constructor(options: Options);
-  constructor(options: Options) {
+  constructor(options: NetherNetGatewayOptions<E>) {
     super();
     this.options = Object.freeze({ ...options });
     this.validateOptions();
   }
 
-  use(middleware: GatewayMiddleware): this;
-  use(selector: 'info', middleware: GatewayMiddleware<ServerInfoContext>): this;
-  use(selector: 'join', middleware: GatewayMiddleware<JoinContext<IsVerified<Options>>>): this;
+  use(middleware: GatewayMiddleware<GatewayContext<E>>): this;
+  use(selector: 'info', middleware: GatewayMiddleware<ServerInfoContext<E>>): this;
+  use(selector: 'join', middleware: GatewayMiddleware<JoinContext<Verified, E>>): this;
   use(
-    selector: 'info' | 'join' | GatewayMiddleware,
+    selector: 'info' | 'join' | GatewayMiddleware<GatewayContext<E>>,
     middleware?:
-      | GatewayMiddleware<ServerInfoContext>
-      | GatewayMiddleware<JoinContext<IsVerified<Options>>>,
+      | GatewayMiddleware<ServerInfoContext<E>>
+      | GatewayMiddleware<JoinContext<Verified, E>>,
   ): this {
+    // The context's env is whatever the runtime passed; `E` only describes it to middleware.
     if (typeof selector === 'function') {
-      this.requestMiddlewares.push(selector);
+      this.requestMiddlewares.push(selector as GatewayMiddleware);
       return this;
     }
 
@@ -79,7 +89,7 @@ export class NetherNetGateway<
     if (selector === 'info') {
       this.infoMiddlewares.push(middleware as GatewayMiddleware<ServerInfoContext>);
     } else if (selector === 'join') {
-      this.joinMiddlewares.push(middleware as GatewayMiddleware<JoinContext>);
+      this.joinMiddlewares.push(middleware as unknown as GatewayMiddleware<JoinContext>);
     } else {
       throw new TypeError(`Unknown middleware selector: ${String(selector)}`);
     }
@@ -236,7 +246,7 @@ export class NetherNetGateway<
     try {
       const upstream =
         typeof this.options.upstream === 'function'
-          ? this.options.upstream(context)
+          ? this.options.upstream(context as GatewayContext<E>)
           : this.options.upstream;
       const target = upstreamUrl(upstream, new URL(request.url));
 
@@ -345,6 +355,12 @@ export class NetherNetGateway<
     }
   }
 }
+
+export type NetherNetGateway<
+  E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
+> = Gateway<E, Verified>;
+export const NetherNetGateway = Gateway as NetherNetGatewayConstructor;
 
 // Runtime servers such as Cloudflare Workers pass immutable headers. Copy from the URL rather than
 // the Request so the copy does not follow its signal, which some runtimes abort once they respond.

@@ -113,10 +113,12 @@ describe('rateLimitBinding', () => {
       JOIN_LIMITER: RateLimitBinding;
     }
     const env: Env = { JOIN_LIMITER: new FakeBinding(1) };
-    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1', getConnInfo });
-    gateway.use(
-      rateLimitBinding({ rules: [{ limiter: (c) => (c.env as Env).JOIN_LIMITER, key: 'ip' }] }),
-    );
+    const gateway = new NetherNetGateway<{ Bindings: Env }>({
+      upstream: 'http://127.0.0.1:1',
+      getConnInfo,
+    });
+    // The rule's context, and so c.env, is typed from the gateway the middleware is passed to.
+    gateway.use(rateLimitBinding({ rules: [{ limiter: (c) => c.env.JOIN_LIMITER, key: 'ip' }] }));
     gateway.use(() => new Response('OK'));
     const request = () =>
       new Request('https://gateway.example/v1/join', {

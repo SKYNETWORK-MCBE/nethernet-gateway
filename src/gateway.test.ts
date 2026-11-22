@@ -607,6 +607,52 @@ describe('NetherNetGateway', () => {
     expectTypeOf(unknown).not.toExtend<typeof verified>();
   });
 
+  it('types c.env from the supplied Bindings without losing the verifier state', () => {
+    interface Env {
+      UPSTREAM: string;
+    }
+    const verifier: VerifyClientToken = () => {
+      throw new Error('unused');
+    };
+    const verified = new NetherNetGateway<{ Bindings: Env }>({
+      upstream: (c) => {
+        expectTypeOf(c.env).toEqualTypeOf<Env>();
+        return c.env.UPSTREAM;
+      },
+      verifyClientToken: verifier,
+    });
+    const unverified = new NetherNetGateway<{ Bindings: Env }>({ upstream: (c) => c.env.UPSTREAM });
+    const untyped = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+
+    verified.use((c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      return next();
+    });
+    verified.use('info', (c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      return next();
+    });
+    verified.use('join', (c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      expectTypeOf(c.identity).toEqualTypeOf<NetherNetIdentity>();
+      return next();
+    });
+    unverified.use('join', (c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      expectTypeOf(c).not.toHaveProperty('identity');
+      return next();
+    });
+    untyped.use((c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<unknown>();
+      return next();
+    });
+
+    expectTypeOf(verified).toEqualTypeOf<NetherNetGateway<{ Bindings: Env }, true>>();
+    expectTypeOf(unverified).toEqualTypeOf<NetherNetGateway<{ Bindings: Env }, false>>();
+    expectTypeOf([verified, unverified, untyped]).toExtend<NetherNetGateway[]>();
+    expect(verified).toBeInstanceOf(NetherNetGateway);
+  });
+
   it('exposes untrusted identity claims without configuring a verifier', async () => {
     const upstream = await serve((_req, res) => {
       res.end('answer');

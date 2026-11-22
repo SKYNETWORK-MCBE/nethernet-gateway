@@ -68,8 +68,12 @@ serve({ fetch: gateway.fetch, port: 8080 });
 import { NetherNetGateway } from 'nethernet-gateway';
 import { getConnInfo } from 'nethernet-gateway/cloudflare-workers';
 
-const gateway = new NetherNetGateway({
-  upstream: (c) => (c.env as Env).UPSTREAM,
+interface Env {
+  UPSTREAM: string;
+}
+
+const gateway = new NetherNetGateway<{ Bindings: Env }>({
+  upstream: (c) => c.env.UPSTREAM,
   getConnInfo,
 });
 
@@ -82,6 +86,12 @@ BDS. The `nodejs_compat` flag is not required.
 
 `getConnInfo` sets `c.remoteAddress`. Without it, `remoteAddress` is `undefined`. Each middleware
 can also read the second and third `fetch` arguments as `c.env` and `c.executionCtx`.
+
+Supply the type of `c.env` as `Bindings` when creating the gateway, as in
+`new NetherNetGateway<{ Bindings: Env }>(options)`. It types `c.env` in `upstream` and in every
+middleware, including the rules of `rateLimitBinding`. Without it, `c.env` is `unknown`. Supplying
+it does not change the identity types: `c.identity` is still always present exactly when
+`verifyClientToken` is given.
 
 Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
@@ -243,8 +253,8 @@ interface Env {
   JOIN_XUID_LIMITER: RateLimit;
 }
 
-const gateway = new NetherNetGateway({
-  upstream: (c) => (c.env as Env).UPSTREAM,
+const gateway = new NetherNetGateway<{ Bindings: Env }>({
+  upstream: (c) => c.env.UPSTREAM,
   verifyClientToken: createMinecraftClientTokenVerifier(),
   getConnInfo,
 });
@@ -253,8 +263,8 @@ gateway.use(
   'join',
   rateLimitBinding({
     rules: [
-      { limiter: (c) => (c.env as Env).JOIN_IP_LIMITER, key: 'ip' },
-      { limiter: (c) => (c.env as Env).JOIN_XUID_LIMITER, key: (c) => c.identity.xuid },
+      { limiter: (c) => c.env.JOIN_IP_LIMITER, key: 'ip' },
+      { limiter: (c) => c.env.JOIN_XUID_LIMITER, key: (c) => c.identity.xuid },
     ],
     retryAfter: 60,
   }),

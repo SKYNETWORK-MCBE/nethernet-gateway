@@ -1,7 +1,8 @@
 // A minimal, runtime-agnostic subset of node:events' EventEmitter.
 
 type Listener<Args extends unknown[]> = (...args: Args) => void;
-type AnyListener = Listener<never[]>;
+// `original` is set on a once() wrapper so off() can find it by the listener that was passed.
+type AnyListener = Listener<never[]> & { original?: unknown };
 
 export class Emitter<Events extends { [K in keyof Events]: unknown[] }> {
   private readonly listeners = new Map<keyof Events, AnyListener[]>();
@@ -14,16 +15,19 @@ export class Emitter<Events extends { [K in keyof Events]: unknown[] }> {
   }
 
   once<K extends keyof Events>(event: K, listener: Listener<Events[K]>): this {
-    const wrapper: Listener<Events[K]> = (...args) => {
+    const wrapper: Listener<Events[K]> & { original?: unknown } = (...args) => {
       this.off(event, wrapper);
       listener(...args);
     };
+    wrapper.original = listener;
     return this.on(event, wrapper);
   }
 
   off<K extends keyof Events>(event: K, listener: Listener<Events[K]>): this {
     const list = this.listeners.get(event);
-    const index = list?.lastIndexOf(listener as unknown as AnyListener) ?? -1;
+    const target: unknown = listener;
+    const index =
+      list?.findLastIndex((entry) => entry === target || entry.original === target) ?? -1;
     if (index !== -1) list!.splice(index, 1);
     return this;
   }

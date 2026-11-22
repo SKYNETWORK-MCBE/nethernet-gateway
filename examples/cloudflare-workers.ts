@@ -1,14 +1,14 @@
 // wrangler dev examples/cloudflare-workers.ts
 import { logger, NetherNetGateway } from '../src';
-import { getConnInfo, type RateLimitBinding, rateLimitBinding } from '../src/cloudflare-workers';
+import { getConnInfo, type RateLimiter, rateLimitBinding } from '../src/cloudflare-workers';
 import { createMinecraftClientTokenVerifier } from '../src/minecraft';
 
 interface Env {
   /** A URL Cloudflare can reach, such as a Cloudflare Tunnel hostname in front of BDS. */
   UPSTREAM: string;
   /** [[ratelimits]] bindings in the Wrangler configuration, such as `simple = { limit = 3, period = 60 }`. */
-  JOIN_IP_LIMITER: RateLimitBinding;
-  JOIN_XUID_LIMITER: RateLimitBinding;
+  JOIN_IP_LIMITER: RateLimiter;
+  JOIN_XUID_LIMITER: RateLimiter;
 }
 
 const gateway = new NetherNetGateway<{ Bindings: Env }>({

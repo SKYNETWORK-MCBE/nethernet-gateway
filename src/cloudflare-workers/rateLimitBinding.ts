@@ -2,13 +2,13 @@ import { isRateLimitKey, type RateLimitKey, resolveKey } from '../middleware/rat
 import type { GatewayContext, GatewayMiddleware } from '../types';
 
 /** The part of a Workers Rate Limiting binding (`RateLimit`) the middleware calls. */
-export interface RateLimitBinding {
+export interface RateLimiter {
   limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 export interface RateLimitBindingRule<CTX extends GatewayContext = GatewayContext> {
   /** Returns the binding to count against, usually from `c.env`. */
-  limiter: (context: CTX) => RateLimitBinding;
+  limiter: (context: CTX) => RateLimiter;
   /** Built-in source or a function that returns the value identifying a bucket. */
   key: RateLimitKey<CTX>;
 }

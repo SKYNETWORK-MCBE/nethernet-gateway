@@ -46,7 +46,28 @@ export interface ConnInfo {
 /** Resolves connection details from the runtime's request and bindings. */
 export type GetConnInfo = (c: { readonly req: Request; readonly env: unknown }) => ConnInfo;
 
-export interface NetherNetGatewayErrorEvent {
+/**
+ * Types supplied to the gateway, such as `new NetherNetGateway<{ Bindings: Env }>(options)`.
+ * `Bindings` is the type of the second `fetch` argument, which middleware reads as `c.env`.
+ */
+export interface GatewayEnv {
+  Bindings?: unknown;
+}
+
+/** The type of `c.env`: the supplied `Bindings`, or `unknown` without one. */
+export type BindingsOf<E extends GatewayEnv> = E extends { Bindings: infer B } ? B : unknown;
+
+/** The runtime arguments of the request an event belongs to. */
+export interface NetherNetGatewayEventRuntime<E extends GatewayEnv = GatewayEnv> {
+  /** The second `fetch` argument, as in `c.env`. */
+  readonly env: BindingsOf<E>;
+  /** The third `fetch` argument, as in `c.executionCtx`. Use it to `waitUntil` async work. */
+  readonly executionCtx: ExecutionContext | undefined;
+}
+
+export interface NetherNetGatewayErrorEvent<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayEventRuntime<E> {
   readonly source: 'request' | 'middleware' | 'upstream' | 'listener';
   readonly error: unknown;
   readonly method: string;
@@ -70,7 +91,9 @@ export interface ClientInfo {
 }
 
 /** Fields shared by the `info` and `join` events. Headers are a detached snapshot. */
-export interface NetherNetGatewayRequestEvent {
+export interface NetherNetGatewayRequestEvent<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayEventRuntime<E> {
   readonly url: string;
   readonly remoteAddress: string | undefined;
   readonly headers: Headers;
@@ -79,7 +102,9 @@ export interface NetherNetGatewayRequestEvent {
 }
 
 /** A server information request that was forwarded upstream. Headers are a detached snapshot. */
-export interface NetherNetGatewayInfoEvent extends NetherNetGatewayRequestEvent {
+export interface NetherNetGatewayInfoEvent<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayRequestEvent<E> {
   readonly client: ClientInfo;
 }
 
@@ -95,26 +120,19 @@ export type JoinIdentity<Verified extends boolean = boolean> = [Verified] extend
     : { readonly identity?: NetherNetIdentity | undefined };
 
 /** A join event without its verified identity; see {@link NetherNetGatewayJoinEvent}. */
-export interface NetherNetGatewayJoinEventBase extends NetherNetGatewayRequestEvent {
+export interface NetherNetGatewayJoinEventBase<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayRequestEvent<E> {
   readonly networkId: string;
   /** Client-supplied claims that may be forged. Never use these for authorization. */
   readonly untrustedIdentity: UntrustedNetherNetIdentity;
 }
 
 /** A validated join offer that was forwarded upstream. Headers are a detached snapshot. */
-export type NetherNetGatewayJoinEvent<Verified extends boolean = boolean> =
-  NetherNetGatewayJoinEventBase & JoinIdentity<Verified>;
-
-/**
- * Types supplied to the gateway, such as `new NetherNetGateway<{ Bindings: Env }>(options)`.
- * `Bindings` is the type of the second `fetch` argument, which middleware reads as `c.env`.
- */
-export interface GatewayEnv {
-  Bindings?: unknown;
-}
-
-/** The type of `c.env`: the supplied `Bindings`, or `unknown` without one. */
-export type BindingsOf<E extends GatewayEnv> = E extends { Bindings: infer B } ? B : unknown;
+export type NetherNetGatewayJoinEvent<
+  E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
+> = NetherNetGatewayJoinEventBase<E> & JoinIdentity<Verified>;
 
 export interface GatewayContext<E extends GatewayEnv = GatewayEnv> {
   readonly req: Request;
@@ -146,8 +164,8 @@ export interface JoinContextBase<E extends GatewayEnv = GatewayEnv> extends Gate
 }
 
 export type JoinContext<
-  Verified extends boolean = boolean,
   E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
 > = JoinContextBase<E> & JoinIdentity<Verified>;
 
 /** A middleware can pass a replacement request to change the request sent downstream. */

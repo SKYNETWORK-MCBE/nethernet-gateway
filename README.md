@@ -56,10 +56,11 @@ const gateway = new NetherNetGateway({
   getConnInfo,
 });
 
-serve({ fetch: gateway.fetch, port: 8080 });
+const server = await serve({ fetch: gateway.fetch, port: 8080 });
 ```
 
-`serve` returns the `node:http` `Server`. To use an existing server, pass
+`serve` resolves with the `node:http` `Server` once it is listening, and rejects if it cannot
+listen, such as when the port is in use. To use an existing server, pass
 `getRequestListener(gateway.fetch)` to `createServer`.
 
 ### Cloudflare Workers
@@ -110,7 +111,18 @@ const gateway = new NetherNetGateway({
 });
 ```
 
-The function runs after request middleware calls `next()`, immediately before the request is proxied. If middleware passes a replacement `Request` to `next()`, the function receives the replacement request and URL. It is not called when middleware returns an early response.
+The function runs after request middleware calls `next()`, immediately before the request is proxied. If middleware passes a replacement `Request` to `next()`, the function receives the replacement request and URL. It is not called when middleware returns an early response. The function may be async, for example to look the upstream up in a key-value store.
+
+### Limit how long the upstream may take
+
+If the upstream does not send its whole response within `upstreamTimeout` milliseconds, the gateway answers `504 Gateway Timeout` and emits `requestError` with source `upstream`. The default is 10 seconds.
+
+```ts
+const gateway = new NetherNetGateway({
+  upstream: 'http://127.0.0.1:19132',
+  upstreamTimeout: 5_000,
+});
+```
 
 ## Middleware
 
@@ -398,8 +410,8 @@ The related address of a reflexive or relayed candidate exposes the upstream ser
 ## Observe request errors
 
 Unexpected request, middleware, and upstream failures are emitted for logging and metrics. Failures
-to read a Node.js request or write its response are passed to the `onError` option of `serve` or
-`getRequestListener`.
+to read a Node.js request or write its response happen outside the gateway, so they are passed to
+the `onError` option of `serve` or `getRequestListener` instead, which defaults to `console.error`.
 
 ```ts
 gateway.on('requestError', ({ source, error, method, url }) => {
@@ -426,7 +438,15 @@ gateway.on('join', ({ status, networkId, untrustedIdentity, identity }) => {
 });
 ```
 
-These events fire once for each valid request forwarded upstream, after the final response is known. They do not fire for early middleware responses or rejected join offers. `status` is the status of the response sent to the client, after every middleware has run: an unreachable upstream gives `502`, and a middleware that replaces the response or throws after `next()` gives its own status or `500`. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `info` also includes the final `client` information, and `join` includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+These events fire once for each valid request forwarded upstream, after the final response is known. They do not fire for early middleware responses or rejected join offers. `status` is the status of the response sent to the client, after every middleware has run: an unreachable upstream gives `502`, one that exceeds `upstreamTimeout` gives `504`, and a middleware that replaces the response or throws after `next()` gives its own status or `500`. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `info` also includes the final `client` information, and `join` includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+
+Every event also carries the request's `env` and `executionCtx`, as middleware reads them from `c`. Listeners are not awaited, so on Cloudflare Workers pass async work to `waitUntil`:
+
+```ts
+gateway.on('join', ({ env, executionCtx, networkId, status }) => {
+  executionCtx?.waitUntil(env.JOIN_LOG.writeDataPoint({ blobs: [networkId], doubles: [status] }));
+});
+```
 
 ## Log requests
 

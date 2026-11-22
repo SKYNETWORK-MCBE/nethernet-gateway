@@ -523,13 +523,118 @@ describe('NetherNetGateway', () => {
 
     expect(response.status).toBe(502);
     expect(errors).toEqual([
-      {
+      expect.objectContaining({
         source: 'upstream',
         error: failure,
         method: 'GET',
         url: '/v1/join',
-      },
+      }),
     ]);
+  });
+
+  it('awaits an async upstream resolver', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
+    });
+    const gateway = new NetherNetGateway({
+      upstream: async () => {
+        await delay(1);
+        return upstream;
+      },
+    });
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
+  });
+
+  it('answers 504 when the upstream exceeds upstreamTimeout', async () => {
+    const upstream = await serve((_req, res) => {
+      // Send the headers in time, but never finish the body.
+      res.writeHead(200);
+      res.write('partial');
+    });
+    const gateway = new NetherNetGateway({ upstream, upstreamTimeout: 50 });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    const statuses: number[] = [];
+    gateway.on('requestError', (event) => errors.push(event));
+    gateway.on('info', (event) => statuses.push(event.status));
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+    for (const server of servers) server.closeAllConnections();
+
+    expect(response.status).toBe(504);
+    expect(statuses).toEqual([504]);
+    expect(errors).toEqual([
+      expect.objectContaining({
+        source: 'upstream',
+        error: expect.objectContaining({ name: 'TimeoutError' }),
+      }),
+    ]);
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects upstreamTimeout %s',
+    (upstreamTimeout) => {
+      expect(
+        () => new NetherNetGateway({ upstream: 'http://127.0.0.1:1', upstreamTimeout }),
+      ).toThrow(/upstreamTimeout/u);
+    },
+  );
+
+  it('passes env and executionCtx to every event', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
+    });
+    interface Env {
+      NAME: string;
+    }
+    const env: Env = { NAME: 'bindings' };
+    const executionCtx = { waitUntil: () => {} };
+    const gateway = new NetherNetGateway<{ Bindings: Env }>({ upstream });
+    const seen: unknown[] = [];
+    gateway.on('info', (event) => {
+      expectTypeOf(event.env).toEqualTypeOf<Env>();
+      seen.push(['info', event.env, event.executionCtx]);
+      throw new Error('listener failed');
+    });
+    gateway.on('join', (event) => seen.push(['join', event.env, event.executionCtx]));
+    gateway.on('requestError', (event) => {
+      expectTypeOf(event.env).toEqualTypeOf<Env>();
+      seen.push([event.source, event.env, event.executionCtx]);
+    });
+
+    await gateway.fetch(new Request('http://localhost/v1/join'), env, executionCtx);
+    await gateway.fetch(
+      new Request('http://localhost/v1/join/1', { method: 'POST', body: untrustedOffer() }),
+      env,
+      executionCtx,
+    );
+
+    expect(seen).toEqual([
+      ['info', env, executionCtx],
+      ['listener', env, executionCtx],
+      ['join', env, executionCtx],
+    ]);
+  });
+
+  it('removes a once listener by the function that was registered', () => {
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    let calls = 0;
+    const listener = () => {
+      calls++;
+    };
+
+    gateway.once('requestError', listener);
+    gateway.off('requestError', listener);
+    gateway.once('requestError', listener);
+    const event = { source: 'request', error: null, method: 'GET', url: '/' } as never;
+    gateway.emit('requestError', event);
+    gateway.emit('requestError', event);
+
+    expect(calls).toBe(1);
+    expect(gateway.listenerCount('requestError')).toBe(0);
   });
 
   it('proxies join metadata and SDP with an untrusted identity', async () => {
@@ -967,8 +1072,12 @@ describe('NetherNetGateway', () => {
     expect((await fetch(`${address}/v1/join`)).status).toBe(500);
 
     const standalone = new NetherNetGateway({ upstream });
-    const server = serveNode({ fetch: standalone.fetch, port: 0, hostname: '127.0.0.1' });
-    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const server = await serveNode({ fetch: standalone.fetch, port: 0, hostname: '127.0.0.1' });
+    const { port } = server.address() as { port: number };
+    // A port in use rejects instead of crashing the process with an unhandled 'error' event.
+    await expect(
+      serveNode({ fetch: standalone.fetch, port, hostname: '127.0.0.1' }),
+    ).rejects.toMatchObject({ code: 'EADDRINUSE' });
     await closeServer(server);
   });
 

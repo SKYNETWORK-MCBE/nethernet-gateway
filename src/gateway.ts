@@ -3,6 +3,8 @@ import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 import { extractUntrustedClientIdentity, verifyClientIdentity } from './identity';
 import { readBody } from './http';
 import type {
+  Awaitable,
+  BindingsOf,
   ClientInfo,
   ExecutionContext,
   GetConnInfo,
@@ -18,14 +20,26 @@ import type {
   VerifyClientToken,
 } from './types';
 
-export interface NetherNetGatewayEvents<Verified extends boolean = boolean> {
-  requestError: [event: NetherNetGatewayErrorEvent];
-  info: [event: NetherNetGatewayInfoEvent];
-  join: [event: NetherNetGatewayJoinEvent<Verified>];
+export interface NetherNetGatewayEvents<
+  E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
+> {
+  requestError: [event: NetherNetGatewayErrorEvent<E>];
+  info: [event: NetherNetGatewayInfoEvent<E>];
+  join: [event: NetherNetGatewayJoinEvent<E, Verified>];
 }
 
+/** How long the upstream may take to respond before the gateway answers `504`. */
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 10_000;
+
 export interface NetherNetGatewayOptions<E extends GatewayEnv = GatewayEnv> {
-  upstream: string | ((ctx: GatewayContext<E>) => string);
+  /** The upstream base URL, or a function that chooses one for each request. */
+  upstream: string | ((c: GatewayContext<E>) => Awaitable<string>);
+  /**
+   * Milliseconds the upstream may take to send its whole response before the gateway answers
+   * `504 Gateway Timeout`. Defaults to 10 seconds.
+   */
+  upstreamTimeout?: number;
   verifyClientToken?: VerifyClientToken;
   /**
    * Resolves `remoteAddress` from the request and `env`. Pass the `getConnInfo` exported by the
@@ -53,7 +67,7 @@ export interface NetherNetGatewayConstructor {
 }
 
 class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitter<
-  NetherNetGatewayEvents<Verified>
+  NetherNetGatewayEvents<E, Verified>
 > {
   readonly options: Readonly<NetherNetGatewayOptions<E>>;
 
@@ -69,12 +83,12 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
 
   use(middleware: GatewayMiddleware<GatewayContext<E>>): this;
   use(selector: 'info', middleware: GatewayMiddleware<ServerInfoContext<E>>): this;
-  use(selector: 'join', middleware: GatewayMiddleware<JoinContext<Verified, E>>): this;
+  use(selector: 'join', middleware: GatewayMiddleware<JoinContext<E, Verified>>): this;
   use(
     selector: 'info' | 'join' | GatewayMiddleware<GatewayContext<E>>,
     middleware?:
       | GatewayMiddleware<ServerInfoContext<E>>
-      | GatewayMiddleware<JoinContext<Verified, E>>,
+      | GatewayMiddleware<JoinContext<E, Verified>>,
   ): this {
     // The context's env is whatever the runtime passed; `E` only describes it to middleware.
     if (typeof selector === 'function') {
@@ -103,7 +117,7 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
    */
   readonly fetch = async (
     request: Request,
-    env?: unknown,
+    env?: BindingsOf<E>,
     executionCtx?: ExecutionContext,
   ): Promise<Response> => {
     const { method, url } = request;
@@ -111,6 +125,7 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
       return new Response('Not Found', { status: 404 });
     }
 
+    const runtime = { env, executionCtx };
     let context: GatewayContext;
     try {
       context = {
@@ -122,7 +137,7 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
         executionCtx,
       };
     } catch (error) {
-      this.emitRequestError('request', error, method, url);
+      this.emitRequestError('request', error, method, url, runtime);
       return new Response('Internal Server Error', { status: 500 });
     }
 
@@ -131,12 +146,12 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
         try {
           return await this.dispatch(requestContext);
         } catch (error) {
-          this.emitRequestError('request', error, method, url);
+          this.emitRequestError('request', error, method, url, runtime);
           return new Response('Internal Server Error', { status: 500 });
         }
       });
     } catch (error) {
-      this.emitRequestError('middleware', error, method, url);
+      this.emitRequestError('middleware', error, method, url, runtime);
       return new Response('Internal Server Error', { status: 500 });
     }
   };
@@ -246,7 +261,7 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
     try {
       const upstream =
         typeof this.options.upstream === 'function'
-          ? this.options.upstream(context as GatewayContext<E>)
+          ? await this.options.upstream(context as GatewayContext<E>)
           : this.options.upstream;
       const target = upstreamUrl(upstream, new URL(request.url));
 
@@ -263,11 +278,15 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
         headers,
         body,
         redirect: 'manual',
+        signal: AbortSignal.timeout(this.options.upstreamTimeout ?? DEFAULT_UPSTREAM_TIMEOUT_MS),
       });
-      return forwardResponse(response);
+      // Buffer the small signaling response so the timeout covers its body as well.
+      return forwardResponse(response, await response.arrayBuffer());
     } catch (error) {
-      this.emitRequestError('upstream', error, request.method, request.url);
-      return new Response('Bad Gateway', { status: 502 });
+      this.emitRequestError('upstream', error, request.method, request.url, context);
+      return isTimeout(error)
+        ? new Response('Gateway Timeout', { status: 504 })
+        : new Response('Bad Gateway', { status: 502 });
     }
   }
 
@@ -291,7 +310,7 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
         replace,
       );
     } catch (error) {
-      this.emitRequestError('middleware', error, context.req.method, context.req.url);
+      this.emitRequestError('middleware', error, context.req.method, context.req.url, context);
       response = new Response('Internal Server Error', { status: 500 });
     }
     observation?.(response.status);
@@ -306,6 +325,8 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
       url,
       remoteAddress: context.remoteAddress,
       headers: new Headers(context.req.headers),
+      env: context.env,
+      executionCtx: context.executionCtx,
     };
     return (status) => {
       try {
@@ -319,7 +340,7 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
             identity: join.identity,
           });
         } else {
-          this.emit('info', {
+          (this as Emitter<NetherNetGatewayEvents>).emit('info', {
             ...common,
             status,
             client: (context as ServerInfoContext).client,
@@ -327,7 +348,7 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
         }
       } catch (error) {
         try {
-          this.emitRequestError('listener', error, context.req.method, url);
+          this.emitRequestError('listener', error, context.req.method, url, context);
         } catch {
           // Even a failing error observer must not change the HTTP result.
         }
@@ -340,8 +361,16 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
     error: unknown,
     method: string,
     url: string,
+    runtime: { env: unknown; executionCtx: ExecutionContext | undefined },
   ): void {
-    this.emit('requestError', { source, error, method, url: requestTarget(url) });
+    (this as Emitter<NetherNetGatewayEvents>).emit('requestError', {
+      source,
+      error,
+      method,
+      url: requestTarget(url),
+      env: runtime.env,
+      executionCtx: runtime.executionCtx,
+    });
   }
 
   private validateOptions(): void {
@@ -352,6 +381,11 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
       } else {
         throw new Error('Invalid upstream URL');
       }
+    }
+
+    const timeout = this.options.upstreamTimeout;
+    if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
+      throw new TypeError('upstreamTimeout must be a positive finite number');
     }
   }
 }
@@ -384,7 +418,11 @@ function upstreamUrl(upstream: string, requestUrl: URL): URL {
   return target;
 }
 
-function forwardResponse(response: Response): Response {
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === 'TimeoutError';
+}
+
+function forwardResponse(response: Response, body: ArrayBuffer): Response {
   const headers = new Headers(response.headers);
   for (const name of ['transfer-encoding', ...HOP_BY_HOP]) headers.delete(name);
   // Fetch decodes compressed bodies, so these headers no longer describe the body it returns.
@@ -393,7 +431,7 @@ function forwardResponse(response: Response): Response {
     headers.delete('content-length');
   }
   const hasBody = response.status !== 204 && response.status !== 304;
-  return new Response(hasBody ? response.body : null, {
+  return new Response(hasBody ? body : null, {
     status: response.status,
     statusText: response.statusText,
     headers,

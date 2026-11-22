@@ -16,14 +16,17 @@ export type FetchCallback = (
 ) => Promise<Response> | Response;
 
 export interface RequestListenerOptions {
-  /** Called when a request cannot be read or a response cannot be written. */
+  /**
+   * Called when a request cannot be read or a response cannot be written. These failures happen
+   * outside the gateway, so it does not emit `requestError` for them. Defaults to `console.error`.
+   */
   onError?: (error: unknown) => void;
 }
 
 export interface ServeOptions extends RequestListenerOptions {
   fetch: FetchCallback;
-  /** Defaults to 3000. */
-  port?: number;
+  /** The port to listen on; `0` picks a free one, which `server.address()` then reports. */
+  port: number;
   hostname?: string;
 }
 
@@ -32,7 +35,7 @@ export function getRequestListener(
   fetch: FetchCallback,
   options: RequestListenerOptions = {},
 ): (incoming: IncomingMessage, outgoing: ServerResponse) => Promise<void> {
-  const { onError } = options;
+  const { onError = console.error } = options;
 
   return async (incoming, outgoing) => {
     let drainAfterResponse = false;
@@ -53,7 +56,7 @@ export function getRequestListener(
           drainAfterResponse = true;
           result = new Response('Request body is too large', { status: 413 });
         } else {
-          onError?.(error);
+          onError(error);
           result = new Response('Internal Server Error', { status: 500 });
         }
       }
@@ -63,12 +66,12 @@ export function getRequestListener(
       if (drainAfterResponse) await writeResponseWhileDraining(incoming, outgoing, result);
       else await writeResponse(outgoing, result);
     } catch (error) {
-      onError?.(error);
+      onError(error);
       if (!outgoing.headersSent) {
         try {
           await writeResponse(outgoing, new Response('Internal Server Error', { status: 500 }));
         } catch (fallbackError) {
-          onError?.(fallbackError);
+          onError(fallbackError);
           outgoing.destroy();
         }
       } else {
@@ -78,19 +81,19 @@ export function getRequestListener(
   };
 }
 
-/** Starts a `node:http` server for a Fetch handler. */
-export function serve(
-  options: ServeOptions,
-  listeningListener?: (info: { address: string; port: number }) => void,
-): Server {
+/**
+ * Starts a `node:http` server for a Fetch handler. The promise resolves with the server once it
+ * is listening, and rejects if it cannot listen, such as when the port is in use.
+ */
+export function serve(options: ServeOptions): Promise<Server> {
   const server = createServer(getRequestListener(options.fetch, options));
-  server.listen(options.port ?? 3000, options.hostname, () => {
-    const address = server.address();
-    if (address && typeof address !== 'string') {
-      listeningListener?.({ address: address.address, port: address.port });
-    }
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(options.port, options.hostname, () => {
+      server.off('error', reject);
+      resolve(server);
+    });
   });
-  return server;
 }
 
 /** Reads the peer address from the bindings passed by this adapter. */

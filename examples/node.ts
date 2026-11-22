@@ -22,6 +22,5 @@ gateway.on('requestError', (event) => {
   console.error(event);
 });
 
-serve({ fetch: gateway.fetch, port: 19133 }, ({ port }) => {
-  console.log(`NetherNet Gateway listening on port ${port}`);
-});
+await serve({ fetch: gateway.fetch, port: 19133 });
+console.log('NetherNet Gateway listening on port 19133');

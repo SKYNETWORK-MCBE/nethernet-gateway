@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vite-plus/test';
 import { NetherNetGateway } from '../gateway';
 import type { GatewayContext } from '../types';
-import { getConnInfo, type RateLimitBinding, rateLimitBinding } from '.';
+import { getConnInfo, type RateLimiter, rateLimitBinding } from '.';
 
-class FakeBinding implements RateLimitBinding {
+class FakeBinding implements RateLimiter {
   readonly keys: string[] = [];
   constructor(private readonly allowed = Number.POSITIVE_INFINITY) {}
 
@@ -110,7 +110,7 @@ describe('rateLimitBinding', () => {
 
   it('reads the binding from the Workers env through the gateway', async () => {
     interface Env {
-      JOIN_LIMITER: RateLimitBinding;
+      JOIN_LIMITER: RateLimiter;
     }
     const env: Env = { JOIN_LIMITER: new FakeBinding(1) };
     const gateway = new NetherNetGateway<{ Bindings: Env }>({

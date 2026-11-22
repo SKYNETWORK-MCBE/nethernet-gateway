@@ -1,10 +1,7 @@
-import { isIP } from '../ip';
 import type { Awaitable, GatewayContext, GatewayMiddleware } from '../types';
+import { isRateLimitKey, type RateLimitKey, resolveKey } from './rateLimitKey';
 
-export type RateLimitKey<CTX extends GatewayContext = GatewayContext> =
-  | 'ip'
-  | 'global'
-  | ((context: CTX) => Awaitable<string | undefined>);
+export type { RateLimitKey } from './rateLimitKey';
 
 export interface RateLimitRule<CTX extends GatewayContext = GatewayContext> {
   /** Built-in source or a function that returns the value identifying a bucket. */
@@ -52,7 +49,7 @@ function createRateLimit<CTX extends GatewayContext = GatewayContext>(
     if (!Number.isSafeInteger(rule.limit) || rule.limit <= 0) {
       throw new TypeError(`rules[${index}].limit must be a positive safe integer`);
     }
-    if (rule.key !== 'ip' && rule.key !== 'global' && typeof rule.key !== 'function') {
+    if (!isRateLimitKey(rule.key)) {
       throw new TypeError(`rules[${index}].key must be "ip", "global", or a function`);
     }
     return { ...rule, entries: new Map() };
@@ -138,53 +135,6 @@ export const rateLimit = Object.assign(createRateLimit, {
   global: globalRule,
   custom: customRule,
 });
-
-async function resolveKey<CTX extends GatewayContext>(
-  key: RateLimitKey<CTX>,
-  context: CTX,
-): Promise<string | undefined> {
-  if (key === 'global') return '';
-  if (key === 'ip') {
-    // Without an address every client would share one bucket, so fail loudly instead.
-    if (!context.remoteAddress) {
-      throw new Error('rateLimit.ip requires remoteAddress; set getConnInfo on the gateway');
-    }
-    return ipBucketKey(context.remoteAddress);
-  }
-
-  const value = await key(context);
-  if (value !== undefined && typeof value !== 'string') {
-    throw new TypeError('A rate-limit key function must return a string or undefined');
-  }
-  return value;
-}
-
-function ipBucketKey(address: string): string {
-  if (isIP(address) !== 6) return address;
-
-  const [host, zone] = address.split('%', 2);
-  const canonical = new URL(`http://[${host}]/`).hostname.slice(1, -1);
-  const [left, right = ''] = canonical.split('::');
-  const head = left ? left.split(':') : [];
-  const tail = right ? right.split(':') : [];
-  const groups = [
-    ...head,
-    ...Array.from({ length: 8 - head.length - tail.length }, () => '0'),
-    ...tail,
-  ].map((group) => Number.parseInt(group, 16));
-
-  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-    const high = groups[6];
-    const low = groups[7];
-    return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
-  }
-
-  const prefix = groups
-    .slice(0, 4)
-    .map((group) => group.toString(16))
-    .join(':');
-  return `ipv6:${prefix}${zone ? `%${zone}` : ''}`;
-}
 
 function state(entry: RateLimitEntry, limit: number, windowMs: number): RateLimitState {
   return {

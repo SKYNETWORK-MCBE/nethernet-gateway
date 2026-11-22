@@ -123,8 +123,8 @@ port range by repeatedly requesting offers, so use `rateLimit` to limit join req
 uses a sliding window and can apply multiple limits to each request. `rateLimit.ip` needs a
 gateway with `getConnInfo`; without it, the request fails with `500` instead of sharing one bucket.
 
-The counters live in memory. On Cloudflare Workers each isolate keeps its own counters, so use a
-`custom` rule backed by Durable Objects or the Workers Rate Limiting binding instead.
+The counters live in memory. On Cloudflare Workers each isolate keeps its own counters, so use
+`rateLimitBinding` there instead (see "Rate limit with Workers Rate Limiting bindings").
 
 ```ts
 import { NetherNetGateway, rateLimit } from 'nethernet-gateway';
@@ -212,6 +212,65 @@ memory and are not shared between gateway processes.
 
 This middleware limits how quickly requests reach BDS. It cannot release ports that BDS has already
 reserved, so the BDS UDP port range and reservation timeout still need to be configured safely.
+
+### Rate limit with Workers Rate Limiting bindings
+
+On Cloudflare Workers, `rateLimitBinding` counts requests with
+[Rate Limiting bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+Each rule names a binding and a key. Keys work as in `rateLimit`: `'ip'`, `'global'`, or a function.
+The limit and period are set on the binding in the Wrangler configuration:
+
+```toml
+[[ratelimits]]
+name = "JOIN_IP_LIMITER"
+namespace_id = "1001"
+simple = { limit = 3, period = 60 }
+
+[[ratelimits]]
+name = "JOIN_XUID_LIMITER"
+namespace_id = "1002"
+simple = { limit = 2, period = 60 }
+```
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo, rateLimitBinding } from 'nethernet-gateway/cloudflare-workers';
+import { createMinecraftClientTokenVerifier } from 'nethernet-gateway/minecraft';
+
+interface Env {
+  UPSTREAM: string;
+  JOIN_IP_LIMITER: RateLimit;
+  JOIN_XUID_LIMITER: RateLimit;
+}
+
+const gateway = new NetherNetGateway({
+  upstream: (c) => (c.env as Env).UPSTREAM,
+  verifyClientToken: createMinecraftClientTokenVerifier(),
+  getConnInfo,
+});
+
+gateway.use(
+  'join',
+  rateLimitBinding({
+    rules: [
+      { limiter: (c) => (c.env as Env).JOIN_IP_LIMITER, key: 'ip' },
+      { limiter: (c) => (c.env as Env).JOIN_XUID_LIMITER, key: (c) => c.identity.xuid },
+    ],
+    retryAfter: 60,
+  }),
+);
+```
+
+Rules are checked in order. Each check counts the request against that binding, and the first rule
+that rejects it returns `429 Too Many Requests`, with `Retry-After` when `retryAfter` is set. Later
+rules are not checked. The bindings report only whether a request is allowed, so passing responses
+carry no `RateLimit-*` headers. The `ip` key needs `getConnInfo`, as with `rateLimit`.
+
+Cloudflare counts approximately and separately in each Cloudflare location, so a request can pass
+a limit that has just been reached. Use these bindings to slow down individual clients by IP address
+or XUID. A `global` rule caps requests per location, not the total that reaches BDS. A strict
+deployment-wide limit needs shared state such as a Durable Object behind a `rateLimit.custom`-style
+middleware of your own.
 
 Server information and join attempts also have separate middleware stacks. A join middleware can pass a replacement request to `next()` to change the offer that reaches the upstream server. The gateway then parses the Network ID and offer again and repeats identity verification before running later join middleware.
 

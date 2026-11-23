@@ -549,38 +549,34 @@ describe('NetherNetGateway', () => {
     expect(await response.text()).toBe('ok');
   });
 
-  it('sends the upstream request through the fetch option', async () => {
-    interface Env {
-      BDS: { fetch(request: Request): Promise<Response> };
-    }
+  it('sends the upstream request through a binding', async () => {
     const sent: { url: string; method: string; body: string; host: string | null }[] = [];
-    const env: Env = {
-      BDS: {
-        async fetch(request) {
-          sent.push({
-            url: request.url,
-            method: request.method,
-            body: await request.text(),
-            host: request.headers.get('host'),
-          });
-          return new Response('answer', { headers: { 'x-upstream': 'binding' } });
-        },
-      },
-    };
-    const gateway = new NetherNetGateway<{ Bindings: Env }>({
-      upstream: 'http://bds.internal/base',
-      fetch: (request, c) => {
-        expectTypeOf(c.env).toEqualTypeOf<Env>();
-        return c.env.BDS.fetch(request);
-      },
-    });
+    class Binding {
+      private readonly answer = 'answer';
+      // Declared like a platform Fetcher, and reads `this` as a real binding does.
+      async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
+        const request = new Request(input, init);
+        sent.push({
+          url: request.url,
+          method: request.method,
+          body: await request.text(),
+          host: request.headers.get('host'),
+        });
+        return new Response(this.answer, { headers: { 'x-upstream': 'binding' } });
+      }
+    }
+    interface Env {
+      BDS: Binding;
+    }
+    const env: Env = { BDS: new Binding() };
+    const gateway = new NetherNetGateway<{ Bindings: Env }>({ upstream: (c) => c.env.BDS });
     const statuses: number[] = [];
     gateway.on('join', (event) => statuses.push(event.status));
 
     const offer = untrustedOffer();
-    const info = await gateway.fetch(new Request('http://localhost/v1/join?version=1'), env);
+    const info = await gateway.fetch(new Request('https://gw.example/v1/join?version=1'), env);
     const join = await gateway.fetch(
-      new Request('http://localhost/v1/join/1', { method: 'POST', body: offer }),
+      new Request('https://gw.example/v1/join/1', { method: 'POST', body: offer }),
       env,
     );
 
@@ -589,16 +585,23 @@ describe('NetherNetGateway', () => {
     expect(await join.text()).toBe('answer');
     expect(statuses).toEqual([200]);
     expect(sent).toEqual([
-      { url: 'http://bds.internal/base/v1/join?version=1', method: 'GET', body: '', host: null },
-      { url: 'http://bds.internal/base/v1/join/1', method: 'POST', body: offer, host: null },
+      { url: 'http://gw.example/v1/join?version=1', method: 'GET', body: '', host: null },
+      { url: 'http://gw.example/v1/join/1', method: 'POST', body: offer, host: null },
     ]);
   });
 
-  it('answers 504 when the fetch option ignores the timeout signal', async () => {
+  it('accepts a binding without a resolver function', async () => {
+    const gateway = new NetherNetGateway({ upstream: { fetch: () => new Response('ok') } });
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(await response.text()).toBe('ok');
+  });
+
+  it('answers 504 when the binding ignores the timeout signal', async () => {
     const gateway = new NetherNetGateway({
-      upstream: 'http://bds.internal',
+      upstream: { fetch: () => new Promise<Response>(() => {}) },
       upstreamTimeout: 50,
-      fetch: () => new Promise<Response>(() => {}),
     });
     const errors: NetherNetGatewayErrorEvent[] = [];
     gateway.on('requestError', (event) => errors.push(event));
@@ -610,10 +613,11 @@ describe('NetherNetGateway', () => {
   });
 
   it.each([
-    ['throws', () => Promise.reject(new Error('unreachable'))],
-    ['returns no Response', () => undefined as unknown as Response],
-  ])('answers 502 when the fetch option %s', async (_name, fetch) => {
-    const gateway = new NetherNetGateway({ upstream: 'http://bds.internal', fetch });
+    ['throws', { fetch: () => Promise.reject(new Error('unreachable')) }],
+    ['returns no Response', { fetch: () => undefined as unknown as Response }],
+    ['has no fetch method', {} as never],
+  ])('answers 502 when the binding %s', async (_name, upstream) => {
+    const gateway = new NetherNetGateway({ upstream });
     const errors: NetherNetGatewayErrorEvent[] = [];
     gateway.on('requestError', (event) => errors.push(event));
 
@@ -621,12 +625,6 @@ describe('NetherNetGateway', () => {
 
     expect(response.status).toBe(502);
     expect(errors).toEqual([expect.objectContaining({ source: 'upstream' })]);
-  });
-
-  it('rejects a fetch option that is not a function', () => {
-    expect(
-      () => new NetherNetGateway({ upstream: 'http://bds.internal', fetch: 'fetch' as never }),
-    ).toThrow(/fetch must be a function/u);
   });
 
   it('answers 504 when the upstream exceeds upstreamTimeout', async () => {

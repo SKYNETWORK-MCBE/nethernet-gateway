@@ -32,20 +32,29 @@ export interface NetherNetGatewayEvents<
 /** How long the upstream may take to respond before the gateway answers `504`. */
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 10_000;
 
+/**
+ * A binding that sends requests to the upstream, such as a Workers VPC service or a service
+ * binding on Cloudflare Workers.
+ */
+export interface UpstreamBinding {
+  fetch(request: Request): Awaitable<Response>;
+}
+
+/** An upstream base URL, or a binding to send the requests through. */
+export type Upstream = string | UpstreamBinding;
+
 export interface NetherNetGatewayOptions<E extends GatewayEnv = GatewayEnv> {
-  /** The upstream base URL, or a function that chooses one for each request. */
-  upstream: string | ((c: GatewayContext<E>) => Awaitable<string>);
+  /**
+   * The upstream base URL, a binding to send the requests through, or a function that chooses
+   * either for each request. A binding, as in `(c) => c.env.BDS`, receives the client's URL with
+   * the `http:` scheme.
+   */
+  upstream: Upstream | ((c: GatewayContext<E>) => Awaitable<Upstream>);
   /**
    * Milliseconds the upstream may take to send its whole response before the gateway answers
    * `504 Gateway Timeout`. Defaults to 10 seconds.
    */
   upstreamTimeout?: number;
-  /**
-   * Sends the request to the upstream in place of the global `fetch`, for an upstream reached
-   * through a binding, as in `(request, c) => c.env.BDS.fetch(request)`. The request targets
-   * `upstream` and carries the `upstreamTimeout` signal.
-   */
-  fetch?: (request: Request, c: GatewayContext<E>) => Awaitable<Response>;
   verifyClientToken?: VerifyClientToken;
   /**
    * Resolves `remoteAddress` from the request and `env`. Pass the `getConnInfo` exported by the
@@ -269,7 +278,13 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
         typeof this.options.upstream === 'function'
           ? await this.options.upstream(context as GatewayContext<E>)
           : this.options.upstream;
-      const target = upstreamUrl(upstream, new URL(request.url));
+      const binding = typeof upstream === 'string' ? undefined : upstream;
+      if (binding && typeof binding.fetch !== 'function') {
+        throw new TypeError('upstream must be a URL or a binding with a fetch method');
+      }
+      const target = binding
+        ? bindingUrl(new URL(request.url))
+        : upstreamUrl(upstream as string, new URL(request.url));
 
       const headers = new Headers(request.headers);
       // The runtime derives these from the target URL and the buffered body.
@@ -283,13 +298,12 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
         this.options.upstreamTimeout ?? DEFAULT_UPSTREAM_TIMEOUT_MS,
       );
       const init = { method: request.method, headers, body, redirect: 'manual', signal } as const;
-      const send = this.options.fetch;
-      const response = send
-        ? // A custom fetch may ignore the signal, so the timeout is enforced here as well.
-          await withTimeout(send(new Request(target, init), context as GatewayContext<E>), signal)
+      const response = binding
+        ? // A binding may ignore the signal, so the timeout is enforced here as well.
+          await withTimeout(binding.fetch(new Request(target, init)), signal)
         : await fetch(target, init);
       if (!(response instanceof Response)) {
-        throw new TypeError('The fetch option must return a Response');
+        throw new TypeError('The upstream binding must return a Response');
       }
       // Buffer the small signaling response so the timeout covers its body as well.
       return forwardResponse(response, await withTimeout(response.arrayBuffer(), signal));
@@ -394,11 +408,6 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
       }
     }
 
-    const send = this.options.fetch;
-    if (send !== undefined && typeof send !== 'function') {
-      throw new TypeError('fetch must be a function');
-    }
-
     const timeout = this.options.upstreamTimeout;
     if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
       throw new TypeError('upstreamTimeout must be a positive finite number');
@@ -424,6 +433,13 @@ function mutableRequest(request: Request): Request {
 }
 
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'upgrade'];
+
+// A binding picks its own destination, so only the scheme matters: BDS serves plain HTTP.
+function bindingUrl(requestUrl: URL): URL {
+  const target = new URL(requestUrl);
+  target.protocol = 'http:';
+  return target;
+}
 
 function upstreamUrl(upstream: string, requestUrl: URL): URL {
   const target = new URL(upstream);

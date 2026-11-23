@@ -393,6 +393,7 @@ The JWKS is cached in memory, so each new process or Workers isolate fetches it 
 import {
   createMinecraftClientTokenVerifier,
   MINECRAFT_JWKS_URL,
+  type JSONWebKeySet,
 } from 'nethernet-gateway/minecraft';
 
 interface Env {
@@ -400,7 +401,7 @@ interface Env {
 }
 
 const verifyClientToken = createMinecraftClientTokenVerifier<{ Bindings: Env }>({
-  jwks: (c) => c.env.KEYS.get('jwks', 'json'),
+  jwks: (c) => c.env.KEYS.get<JSONWebKeySet>('jwks', 'json'),
 });
 const gateway = new NetherNetGateway<{ Bindings: Env }>({ upstream, verifyClientToken });
 

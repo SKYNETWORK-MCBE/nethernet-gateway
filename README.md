@@ -81,7 +81,8 @@ const gateway = new NetherNetGateway<{ Bindings: Env }>({
 export default gateway;
 ```
 
-The upstream must be reachable from Cloudflare, for example through a Cloudflare Tunnel. Only the
+The upstream must be reachable from Cloudflare, for example through a Cloudflare Tunnel, or
+through a binding given to [`fetch`](#reach-the-upstream-through-a-binding). Only the
 signaling goes through the Worker; the game connection still runs directly between the client and
 BDS. The `nodejs_compat` flag is not required.
 
@@ -123,6 +124,27 @@ const gateway = new NetherNetGateway({
   upstreamTimeout: 5_000,
 });
 ```
+
+### Reach the upstream through a binding
+
+Pass `fetch` to send the upstream request yourself instead of through the global `fetch`. On
+Cloudflare Workers this reaches a BDS that has no public address, through a
+[Workers VPC](https://developers.cloudflare.com/workers-vpc/) service or a service binding.
+
+```ts
+interface Env {
+  BDS: { fetch(request: Request): Promise<Response> };
+}
+
+const gateway = new NetherNetGateway<{ Bindings: Env }>({
+  // A VPC service connects to its configured host and port; this URL supplies the scheme and path.
+  upstream: 'http://bds.internal',
+  fetch: (request, c) => c.env.BDS.fetch(request),
+});
+```
+
+The request targets `upstream` and carries the `upstreamTimeout` signal. The timeout still applies
+when the function does not pass the signal on. A function that throws gives `502`.
 
 ## Middleware
 

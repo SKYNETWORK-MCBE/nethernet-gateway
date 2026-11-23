@@ -549,6 +549,86 @@ describe('NetherNetGateway', () => {
     expect(await response.text()).toBe('ok');
   });
 
+  it('sends the upstream request through the fetch option', async () => {
+    interface Env {
+      BDS: { fetch(request: Request): Promise<Response> };
+    }
+    const sent: { url: string; method: string; body: string; host: string | null }[] = [];
+    const env: Env = {
+      BDS: {
+        async fetch(request) {
+          sent.push({
+            url: request.url,
+            method: request.method,
+            body: await request.text(),
+            host: request.headers.get('host'),
+          });
+          return new Response('answer', { headers: { 'x-upstream': 'binding' } });
+        },
+      },
+    };
+    const gateway = new NetherNetGateway<{ Bindings: Env }>({
+      upstream: 'http://bds.internal/base',
+      fetch: (request, c) => {
+        expectTypeOf(c.env).toEqualTypeOf<Env>();
+        return c.env.BDS.fetch(request);
+      },
+    });
+    const statuses: number[] = [];
+    gateway.on('join', (event) => statuses.push(event.status));
+
+    const offer = untrustedOffer();
+    const info = await gateway.fetch(new Request('http://localhost/v1/join?version=1'), env);
+    const join = await gateway.fetch(
+      new Request('http://localhost/v1/join/1', { method: 'POST', body: offer }),
+      env,
+    );
+
+    expect(info.status).toBe(200);
+    expect(join.headers.get('x-upstream')).toBe('binding');
+    expect(await join.text()).toBe('answer');
+    expect(statuses).toEqual([200]);
+    expect(sent).toEqual([
+      { url: 'http://bds.internal/base/v1/join?version=1', method: 'GET', body: '', host: null },
+      { url: 'http://bds.internal/base/v1/join/1', method: 'POST', body: offer, host: null },
+    ]);
+  });
+
+  it('answers 504 when the fetch option ignores the timeout signal', async () => {
+    const gateway = new NetherNetGateway({
+      upstream: 'http://bds.internal',
+      upstreamTimeout: 50,
+      fetch: () => new Promise<Response>(() => {}),
+    });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    gateway.on('requestError', (event) => errors.push(event));
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(response.status).toBe(504);
+    expect(errors).toEqual([expect.objectContaining({ source: 'upstream' })]);
+  });
+
+  it.each([
+    ['throws', () => Promise.reject(new Error('unreachable'))],
+    ['returns no Response', () => undefined as unknown as Response],
+  ])('answers 502 when the fetch option %s', async (_name, fetch) => {
+    const gateway = new NetherNetGateway({ upstream: 'http://bds.internal', fetch });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    gateway.on('requestError', (event) => errors.push(event));
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(response.status).toBe(502);
+    expect(errors).toEqual([expect.objectContaining({ source: 'upstream' })]);
+  });
+
+  it('rejects a fetch option that is not a function', () => {
+    expect(
+      () => new NetherNetGateway({ upstream: 'http://bds.internal', fetch: 'fetch' as never }),
+    ).toThrow(/fetch must be a function/u);
+  });
+
   it('answers 504 when the upstream exceeds upstreamTimeout', async () => {
     const upstream = await serve((_req, res) => {
       // Send the headers in time, but never finish the body.

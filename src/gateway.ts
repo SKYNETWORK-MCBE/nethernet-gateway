@@ -40,6 +40,12 @@ export interface NetherNetGatewayOptions<E extends GatewayEnv = GatewayEnv> {
    * `504 Gateway Timeout`. Defaults to 10 seconds.
    */
   upstreamTimeout?: number;
+  /**
+   * Sends the request to the upstream in place of the global `fetch`, for an upstream reached
+   * through a binding, as in `(request, c) => c.env.BDS.fetch(request)`. The request targets
+   * `upstream` and carries the `upstreamTimeout` signal.
+   */
+  fetch?: (request: Request, c: GatewayContext<E>) => Awaitable<Response>;
   verifyClientToken?: VerifyClientToken;
   /**
    * Resolves `remoteAddress` from the request and `env`. Pass the `getConnInfo` exported by the
@@ -273,15 +279,20 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
       // BDS requires a content length and does not read a chunked request body, so buffer it.
       const body = request.body ? await request.arrayBuffer() : undefined;
 
-      const response = await fetch(target, {
-        method: request.method,
-        headers,
-        body,
-        redirect: 'manual',
-        signal: AbortSignal.timeout(this.options.upstreamTimeout ?? DEFAULT_UPSTREAM_TIMEOUT_MS),
-      });
+      const signal = AbortSignal.timeout(
+        this.options.upstreamTimeout ?? DEFAULT_UPSTREAM_TIMEOUT_MS,
+      );
+      const init = { method: request.method, headers, body, redirect: 'manual', signal } as const;
+      const send = this.options.fetch;
+      const response = send
+        ? // A custom fetch may ignore the signal, so the timeout is enforced here as well.
+          await withTimeout(send(new Request(target, init), context as GatewayContext<E>), signal)
+        : await fetch(target, init);
+      if (!(response instanceof Response)) {
+        throw new TypeError('The fetch option must return a Response');
+      }
       // Buffer the small signaling response so the timeout covers its body as well.
-      return forwardResponse(response, await response.arrayBuffer());
+      return forwardResponse(response, await withTimeout(response.arrayBuffer(), signal));
     } catch (error) {
       this.emitRequestError('upstream', error, request.method, request.url, context);
       return isTimeout(error)
@@ -383,6 +394,11 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
       }
     }
 
+    const send = this.options.fetch;
+    if (send !== undefined && typeof send !== 'function') {
+      throw new TypeError('fetch must be a function');
+    }
+
     const timeout = this.options.upstreamTimeout;
     if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
       throw new TypeError('upstreamTimeout must be a positive finite number');
@@ -416,6 +432,21 @@ function upstreamUrl(upstream: string, requestUrl: URL): URL {
   target.pathname = basePath + requestUrl.pathname;
   target.search = requestUrl.search;
   return target;
+}
+
+// Rejects with the signal's reason once it aborts, leaving the pending work to the runtime.
+async function withTimeout<T>(work: Awaitable<T>, signal: AbortSignal): Promise<T> {
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason as Error);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function isTimeout(error: unknown): boolean {

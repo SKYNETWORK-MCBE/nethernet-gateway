@@ -387,34 +387,35 @@ const gateway = new NetherNetGateway({
 
 The verifier requires `exp` and `iat`, validates Minecraft's issuer, audience, RS256 signature, expiration and any not-before timestamp, identity claims, and client public key. It maps `xid` to `xuid`, `mid` to `playFabId`, and `xname` to `gamertag`, and accepts both observed `cpk` formats: a JWK object and a Base64-encoded DER SubjectPublicKeyInfo value.
 
-The JWKS is cached in memory, so each new process or Workers isolate fetches it again. To verify with keys you keep yourself, pass `jwks`: a JWKS object, or a function that reads one for each token. The function receives the request context, so it can read a binding. For example, a scheduled job can fetch `MINECRAFT_JWKS_URL` and store the response for the gateway to read:
+The JWKS is cached in memory, so each new process or Workers isolate fetches it again. To also keep it in a store of your own, pass `jwks` with a `get` that returns the stored keys and a `set` that stores them. Both receive the request context first, so they can use a binding. On Cloudflare Workers, `kvJwks` builds the pair from a KV namespace:
 
 ```ts
-import {
-  createMinecraftClientTokenVerifier,
-  MINECRAFT_JWKS_URL,
-  type JSONWebKeySet,
-} from 'nethernet-gateway/minecraft';
+import { kvJwks } from 'nethernet-gateway/cloudflare-workers';
+import { createMinecraftClientTokenVerifier } from 'nethernet-gateway/minecraft';
 
 interface Env {
   KEYS: KVNamespace;
 }
 
 const verifyClientToken = createMinecraftClientTokenVerifier<{ Bindings: Env }>({
-  jwks: (c) => c.env.KEYS.get<JSONWebKeySet>('jwks', 'json'),
+  jwks: kvJwks((c) => c.env.KEYS),
 });
-const gateway = new NetherNetGateway<{ Bindings: Env }>({ upstream, verifyClientToken });
-
-export default {
-  fetch: gateway.fetch,
-  async scheduled(_controller: ScheduledController, env: Env) {
-    const response = await fetch(MINECRAFT_JWKS_URL);
-    if (response.ok) await env.KEYS.put('jwks', await response.text());
-  },
-};
 ```
 
-With `jwks`, a token signed by a key outside the supplied set is rejected without fetching. When the function returns `undefined` or `null`, such as before the first scheduled run, the verifier fetches the JWKS itself.
+`kvJwks` stores the JWKS under the key `jwks` and expires it after one day, so that a key the service has withdrawn does not stay trusted; pass `{ key, expirationTtl }` to change either. For another store, write the pair yourself:
+
+```ts
+const verifyClientToken = createMinecraftClientTokenVerifier({
+  jwks: {
+    get: (c) => readJwks(),
+    set: (c, jwks) => writeJwks(jwks),
+  },
+});
+```
+
+The verifier uses the keys `get` returns. It fetches the JWKS only when `get` returns nothing or the stored keys lack the token's key, as after a key rotation, and passes what it fetched to `set`. Fetches triggered by unknown keys are at least 30 seconds apart. A token that a stored key fails to verify is rejected without fetching. A `get` that throws, or returns something other than a JWKS, counts as nothing stored. `set` runs under `c.executionCtx.waitUntil` where available and does not delay the join; its failures are ignored, so handle them inside the function.
+
+Either function may be left out. `get` alone reads keys that something else stores, such as a scheduled job that fetches `MINECRAFT_JWKS_URL`.
 
 To trust another compatible authentication service or apply additional policy, provide your own `verifyClientToken` callback. It receives the token and the request context. The callback is responsible for validating the token and returning a complete `NetherNetIdentity` containing `xuid`, `playFabId`, `gamertag`, `cpk`, and `claims`; the gateway does not validate the callback's return shape. Tokens must still carry the `xid`, `mid`, and `xname` claims required for `untrustedIdentity`.
 

@@ -101,11 +101,11 @@ describe('createMinecraftClientTokenVerifier', () => {
   });
 });
 
-describe('createMinecraftClientTokenVerifier with supplied keys', () => {
+describe('createMinecraftClientTokenVerifier with a JWKS store', () => {
   const issuer = 'https://issuer.example/';
   const audience = 'minecraft-test';
   // Nothing listens here, so a verification that fetches the JWKS fails.
-  const jwksUrl = 'http://127.0.0.1:1/keys';
+  const unreachable = 'http://127.0.0.1:1/keys';
 
   async function setup() {
     const auth = await generateKeyPair('RS256', { extractable: true });
@@ -120,59 +120,160 @@ describe('createMinecraftClientTokenVerifier with supplied keys', () => {
     return { jwks: { keys: [authJwk] }, token };
   }
 
-  it('verifies with a supplied JWKS without fetching', async () => {
-    const { jwks, token } = await setup();
-    const verify = createMinecraftClientTokenVerifier({ issuer, audience, jwksUrl, jwks });
+  async function serveJwks(jwks: unknown) {
+    const counter = { fetched: 0, url: '' };
+    const address = await testServers.serve((_request, response) => {
+      counter.fetched++;
+      response.end(JSON.stringify(jwks));
+    });
+    counter.url = `${address}/keys`;
+    return counter;
+  }
 
-    await expect(verify(token, context())).resolves.toMatchObject({ gamertag: 'Player' });
-  });
+  function withWaitUntil() {
+    const pending: Promise<unknown>[] = [];
+    const c = {
+      ...context(),
+      executionCtx: { waitUntil: (promise: Promise<unknown>) => void pending.push(promise) },
+    };
+    return { c, pending };
+  }
 
-  it('reads the JWKS from the request context', async () => {
+  it('verifies with the stored keys without fetching', async () => {
     const { jwks, token } = await setup();
     interface Env {
       JWKS: typeof jwks;
     }
+    const sets: unknown[] = [];
     const verify = createMinecraftClientTokenVerifier<{ Bindings: Env }>({
       issuer,
       audience,
-      jwksUrl,
-      jwks: async (c) => c.env.JWKS,
+      jwksUrl: unreachable,
+      jwks: {
+        get: (c) => c.env.JWKS,
+        set: (_c, updated) => void sets.push(updated),
+      },
     });
 
     await expect(verify(token, context<{ Bindings: Env }>({ JWKS: jwks }))).resolves.toMatchObject({
       gamertag: 'Player',
     });
+    expect(sets).toEqual([]);
   });
 
-  it('rejects a token signed by a key outside the supplied JWKS', async () => {
-    const { token } = await setup();
-    const other = await setup();
+  it('fetches and stores the keys when nothing is stored', async () => {
+    const { jwks, token } = await setup();
+    const remote = await serveJwks(jwks);
+    const store: { jwks?: unknown } = {};
+    const { c, pending } = withWaitUntil();
     const verify = createMinecraftClientTokenVerifier({
       issuer,
       audience,
-      jwksUrl,
-      jwks: other.jwks,
+      jwksUrl: remote.url,
+      jwks: {
+        get: () => store.jwks as typeof jwks | undefined,
+        set: (received, updated) => {
+          expect(received).toBe(c);
+          store.jwks = updated;
+        },
+      },
+    });
+
+    await expect(verify(token, c)).resolves.toMatchObject({ gamertag: 'Player' });
+    await Promise.all(pending);
+    expect(store.jwks).toEqual(jwks);
+
+    // The stored keys now verify without another fetch or store.
+    await expect(verify(token, c)).resolves.toMatchObject({ gamertag: 'Player' });
+    expect(remote.fetched).toBe(1);
+    expect(pending).toHaveLength(1);
+  });
+
+  it('fetches when the stored keys lack the key of the token', async () => {
+    const { jwks, token } = await setup();
+    const remote = await serveJwks(jwks);
+    const store = { jwks: { keys: [{ ...jwks.keys[0], kid: 'rotated-out' }] } };
+    const { c, pending } = withWaitUntil();
+    const verify = createMinecraftClientTokenVerifier({
+      issuer,
+      audience,
+      jwksUrl: remote.url,
+      jwks: { get: () => store.jwks, set: (_c, updated) => void (store.jwks = updated as never) },
+    });
+
+    await expect(verify(token, c)).resolves.toMatchObject({ gamertag: 'Player' });
+    await Promise.all(pending);
+    expect(remote.fetched).toBe(1);
+    expect(store.jwks).toEqual(jwks);
+  });
+
+  it('rejects a token whose key is neither stored nor fetched', async () => {
+    const { token } = await setup();
+    const other = await setup();
+    const remote = await serveJwks({ keys: [{ ...other.jwks.keys[0], kid: 'another' }] });
+    const verify = createMinecraftClientTokenVerifier({
+      issuer,
+      audience,
+      jwksUrl: remote.url,
+      jwks: { get: () => ({ keys: [{ ...other.jwks.keys[0], kid: 'stored' }] }) },
     });
 
     await expect(verify(token, context())).rejects.toThrow();
   });
 
-  it('fetches jwksUrl when the function supplies nothing', async () => {
-    const { jwks, token } = await setup();
-    let fetched = 0;
-    const address = await testServers.serve((_request, response) => {
-      fetched++;
-      response.end(JSON.stringify(jwks));
-    });
+  it('does not fetch when a stored key fails to verify the token', async () => {
+    const { jwks } = await setup();
+    const forged = await setup();
+    const remote = await serveJwks(jwks);
     const verify = createMinecraftClientTokenVerifier({
       issuer,
       audience,
-      jwksUrl: `${address}/keys`,
-      jwks: () => undefined,
+      jwksUrl: remote.url,
+      jwks: { get: () => jwks },
+    });
+
+    // Same key ID as the stored key, but signed by another key.
+    await expect(verify(forged.token, context())).rejects.toThrow();
+    expect(remote.fetched).toBe(0);
+  });
+
+  it.each([
+    ['fails', () => Promise.reject(new Error('store unavailable'))],
+    ['returns something that is not a JWKS', () => ({ corrupted: true }) as never],
+    ['returns null', () => null],
+  ])('fetches when get %s', async (_name, get) => {
+    const { jwks, token } = await setup();
+    const remote = await serveJwks(jwks);
+    const verify = createMinecraftClientTokenVerifier({
+      issuer,
+      audience,
+      jwksUrl: remote.url,
+      jwks: { get },
     });
 
     await expect(verify(token, context())).resolves.toMatchObject({ gamertag: 'Player' });
-    expect(fetched).toBe(1);
+    expect(remote.fetched).toBe(1);
+  });
+
+  it('ignores a failing set', async () => {
+    const { jwks, token } = await setup();
+    const remote = await serveJwks(jwks);
+    let calls = 0;
+    const verify = createMinecraftClientTokenVerifier({
+      issuer,
+      audience,
+      jwksUrl: remote.url,
+      jwks: {
+        set: () => {
+          calls++;
+          throw new Error('store unavailable');
+        },
+      },
+    });
+
+    await expect(verify(token, context())).resolves.toMatchObject({ gamertag: 'Player' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toBe(1);
   });
 
   it('exports the Minecraft JWKS URL', () => {

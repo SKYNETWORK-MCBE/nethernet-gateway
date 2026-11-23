@@ -8,4 +8,5 @@ export function getConnInfo(c: { readonly req: Request }): ConnInfo {
   return { remote: { address: c.req.headers.get('cf-connecting-ip') ?? undefined } };
 }
 
+export * from './kvJwks';
 export * from './rateLimitBinding';

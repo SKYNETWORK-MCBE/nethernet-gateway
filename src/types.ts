@@ -28,7 +28,11 @@ export interface UntrustedNetherNetIdentity {
   readonly claims: Readonly<Record<string, unknown>>;
 }
 
-export type VerifyClientToken = (token: string) => Awaitable<NetherNetIdentity>;
+/**
+ * Authenticates a client token. It also receives the request context, so it can read `c.env`,
+ * for example to load trusted keys from a binding.
+ */
+export type VerifyClientToken = (token: string, c: GatewayContext) => Awaitable<NetherNetIdentity>;
 
 /** An execution context that can extend the request lifetime, such as on Cloudflare Workers. */
 export interface ExecutionContext {

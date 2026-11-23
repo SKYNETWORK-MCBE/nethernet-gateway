@@ -42,6 +42,7 @@ export function parseIP(address: string): ParsedIP | undefined {
   return zone === undefined ? { family: 6, bytes } : { family: 6, bytes, zone };
 }
 
+/** Returns `4` or `6` for an IPv4 or IPv6 address literal, and `0` for anything else. */
 export function isIP(address: string): 0 | 4 | 6 {
   return parseIP(address)?.family ?? 0;
 }

@@ -387,7 +387,35 @@ const gateway = new NetherNetGateway({
 
 The verifier requires `exp` and `iat`, validates Minecraft's issuer, audience, RS256 signature, expiration and any not-before timestamp, identity claims, and client public key. It maps `xid` to `xuid`, `mid` to `playFabId`, and `xname` to `gamertag`, and accepts both observed `cpk` formats: a JWK object and a Base64-encoded DER SubjectPublicKeyInfo value.
 
-To trust another compatible authentication service or apply additional policy, provide your own `verifyClientToken` callback. The callback is responsible for validating the token and returning a complete `NetherNetIdentity` containing `xuid`, `playFabId`, `gamertag`, `cpk`, and `claims`; the gateway does not validate the callback's return shape. Tokens must still carry the `xid`, `mid`, and `xname` claims required for `untrustedIdentity`.
+The JWKS is cached in memory, so each new process or Workers isolate fetches it again. To verify with keys you keep yourself, pass `jwks`: a JWKS object, or a function that reads one for each token. The function receives the request context, so it can read a binding. For example, a scheduled job can fetch `MINECRAFT_JWKS_URL` and store the response for the gateway to read:
+
+```ts
+import {
+  createMinecraftClientTokenVerifier,
+  MINECRAFT_JWKS_URL,
+} from 'nethernet-gateway/minecraft';
+
+interface Env {
+  KEYS: KVNamespace;
+}
+
+const verifyClientToken = createMinecraftClientTokenVerifier<{ Bindings: Env }>({
+  jwks: (c) => c.env.KEYS.get('jwks', 'json'),
+});
+const gateway = new NetherNetGateway<{ Bindings: Env }>({ upstream, verifyClientToken });
+
+export default {
+  fetch: gateway.fetch,
+  async scheduled(_controller: ScheduledController, env: Env) {
+    const response = await fetch(MINECRAFT_JWKS_URL);
+    if (response.ok) await env.KEYS.put('jwks', await response.text());
+  },
+};
+```
+
+With `jwks`, a token signed by a key outside the supplied set is rejected without fetching. When the function returns `undefined` or `null`, such as before the first scheduled run, the verifier fetches the JWKS itself.
+
+To trust another compatible authentication service or apply additional policy, provide your own `verifyClientToken` callback. It receives the token and the request context. The callback is responsible for validating the token and returning a complete `NetherNetIdentity` containing `xuid`, `playFabId`, `gamertag`, `cpk`, and `claims`; the gateway does not validate the callback's return shape. Tokens must still carry the `xid`, `mid`, and `xname` claims required for `untrustedIdentity`.
 
 When a verifier is configured, its JWT verification and the SDP fingerprint binding must also succeed. Failures are rejected with `401`.
 
@@ -424,6 +452,21 @@ gateway.use('join', rewriteCandidates({ mapAddress: { ip: '203.0.113.10' } }));
 ```
 
 Set only `ip` to keep each candidate's own port, or only `port` to keep its address. Pass a function as `mapAddress` to choose the address for each join. It receives the addresses of the answer's candidates and the join context. Omit `mapAddress` to keep the routable candidates at their own address.
+
+`isIP` returns `4` or `6` for an address literal, which lets `mapAddress` advertise the address of the family the client connected with:
+
+```ts
+import { isIP, rewriteCandidates } from 'nethernet-gateway';
+
+gateway.use(
+  'join',
+  rewriteCandidates({
+    mapAddress: (_addresses, c) => ({
+      ip: isIP(c.remoteAddress ?? '') === 6 ? '2001:db8::10' : '203.0.113.10',
+    }),
+  }),
+);
+```
 
 When no candidate survives, the answer is returned unchanged, private candidates included, so the connection can still complete. Set `fallback: 'drop'` to remove the candidates instead.
 

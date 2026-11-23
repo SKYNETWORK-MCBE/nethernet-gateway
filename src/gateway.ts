@@ -253,18 +253,21 @@ class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitte
       return new Response('Client identity is required', { status: 401 });
     }
 
-    const identity = await this.identity(offer);
+    const identity = await this.identity(offer, originalContext);
     if (identity instanceof Response) return identity;
 
     return { ...originalContext, req: request, url, networkId, offer, untrustedIdentity, identity };
   }
 
-  private async identity(offer: string): Promise<NetherNetIdentity | undefined | Response> {
+  private async identity(
+    offer: string,
+    context: GatewayContext,
+  ): Promise<NetherNetIdentity | undefined | Response> {
     const verifyClientToken = this.options.verifyClientToken;
     if (!verifyClientToken) return undefined;
 
     try {
-      return await verifyClientIdentity(offer, verifyClientToken);
+      return await verifyClientIdentity(offer, (token) => verifyClientToken(token, context));
     } catch {
       return new Response('Invalid client identity', { status: 401 });
     }

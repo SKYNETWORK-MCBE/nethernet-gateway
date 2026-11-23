@@ -5,7 +5,7 @@ import {
   normalizeMinecraftIdentityClaims,
 } from './minecraft/claims';
 import { decodeBase64Json } from './base64';
-import type { NetherNetIdentity, UntrustedNetherNetIdentity, VerifyClientToken } from './types';
+import type { Awaitable, NetherNetIdentity, UntrustedNetherNetIdentity } from './types';
 
 const ASYMMETRIC_JWS_ALGORITHMS = [
   'ES256',
@@ -66,7 +66,7 @@ export function extractUntrustedClientIdentity(
 // https://mojang.github.io/bedrock-protocol-docs/guides/nether-net-onboarding-guide/#51-validating-the-client-assertion-in-the-offer
 export async function verifyClientIdentity(
   offer: string,
-  verifyClientToken: VerifyClientToken,
+  verifyClientToken: (token: string) => Awaitable<NetherNetIdentity>,
 ): Promise<NetherNetIdentity | undefined> {
   const assertion = parseIdentityAssertion(offer);
   if (!assertion) return undefined;

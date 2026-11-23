@@ -627,6 +627,29 @@ describe('NetherNetGateway', () => {
     expect(errors).toEqual([expect.objectContaining({ source: 'upstream' })]);
   });
 
+  it('passes the request context to verifyClientToken', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
+    });
+    const env = { NAME: 'bindings' };
+    const seen: unknown[] = [];
+    const gateway = new NetherNetGateway({
+      upstream,
+      verifyClientToken: (_token, c) => {
+        seen.push([c.env, c.url.pathname, c.req.method]);
+        throw new Error('rejected');
+      },
+    });
+
+    const response = await gateway.fetch(
+      new Request('http://localhost/v1/join/1', { method: 'POST', body: untrustedOffer() }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(seen).toEqual([[env, '/v1/join/1', 'POST']]);
+  });
+
   it('answers 504 when the upstream exceeds upstreamTimeout', async () => {
     const upstream = await serve((_req, res) => {
       // Send the headers in time, but never finish the body.

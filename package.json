@@ -34,20 +34,20 @@
     "prepare": "vp config"
   },
   "dependencies": {
-    "jose": "^6.2.12",
+    "jose": "^6.2.18",
     "valibot": "1.5.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.11",
     "typescript": "^6.0.3",
-    "vite-plus": "^0.3.2"
+    "vite-plus": "^1.8.0"
   },
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
-      "version": "12.4.2",
+      "version": "12.23.0",
       "onFail": "download"
     }
   },
-  "packageManager": "pnpm@12.4.2"
+  "packageManager": "pnpm@12.23.0"
 }

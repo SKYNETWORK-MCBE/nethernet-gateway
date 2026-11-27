@@ -56,6 +56,7 @@ export interface RewriteCandidateOptions {
 // Strips the client's candidates from the offer and keeps only the answer's candidates a remote
 // client can reach: candidates without a global IP address are dropped, host candidates are
 // dropped once a NAT-traversing candidate exists, and the survivors are readdressed to `mapAddress`.
+// The connection line follows the first survivor.
 export function rewriteCandidates(
   options: RewriteCandidateOptions = {},
 ): GatewayMiddleware<JoinContext> {
@@ -92,6 +93,7 @@ export function rewriteCandidates(
     const hasNonHost = routable.some(({ fields }) => fields[TYPE] !== 'host');
     const kept = new Map<number, string>();
     const seen = new Set<string>();
+    let defaultAddress: string | undefined;
     for (const { index, fields } of routable) {
       if (hasNonHost && fields[TYPE] === 'host') continue;
 
@@ -111,12 +113,15 @@ export function rewriteCandidates(
       ].join(' ');
       if (seen.has(key)) continue;
       seen.add(key);
+      defaultAddress ??= rewritten[ADDRESS];
       kept.set(index, CANDIDATE_PREFIX + rewritten.join(' '));
     }
     if (kept.size === 0 && fallback === 'original') return new Response(answer, response);
 
     const out = lines.flatMap(
-      (line, index) => kept.get(index) ?? (line.startsWith(CANDIDATE_PREFIX) ? [] : line),
+      (line, index) =>
+        kept.get(index) ??
+        (line.startsWith(CANDIDATE_PREFIX) ? [] : rewriteConnection(line, defaultAddress)),
     );
     return new Response(out.join('\r\n'), response);
   };
@@ -127,6 +132,16 @@ function stripCandidates(sdp: string): string {
     .split(/\r?\n/u)
     .filter((line) => !line.startsWith(CANDIDATE_PREFIX))
     .join('\r\n');
+}
+
+// The connection line repeats the address of the default candidate, which is the upstream's own
+// before the rewrite. It follows the first kept candidate, or is hidden when none is kept. A line
+// that already hides the address is left as the upstream sent it.
+function rewriteConnection(line: string, address: string | undefined): string {
+  const current = /^c=IN IP[46] (\S+)/u.exec(line)?.[1];
+  if (current === undefined || current === '0.0.0.0' || current === '::') return line;
+  if (address !== undefined && isIP(address) !== 0) return `c=IN IP${isIP(address)} ${address}`;
+  return line.startsWith('c=IN IP4') ? 'c=IN IP4 0.0.0.0' : 'c=IN IP6 ::';
 }
 
 function parseCandidate(line: string): string[] | undefined {

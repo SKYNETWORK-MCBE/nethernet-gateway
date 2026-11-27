@@ -472,6 +472,8 @@ gateway.use(
 
 When no candidate survives, the answer is returned unchanged, private candidates included, so the connection can still complete. Set `fallback: 'drop'` to remove the candidates instead.
 
+The connection line (`c=`) of the answer repeats the address of the upstream server's default candidate. It is replaced with the address of the first kept candidate, or with `0.0.0.0` or `::` when `fallback: 'drop'` keeps none. A connection line that is already `0.0.0.0` or `::` is left as it is.
+
 The related address of a reflexive or relayed candidate exposes the upstream server's own address. By default it is replaced with `0.0.0.0` or `::` and port `0`. Pass an object to replace only the `ip` or `port` it sets, leaving the other field as the upstream sent it, or `false` to keep the related address. A `port` that is not an integer from 0 to 65535 makes `rewriteCandidates` throw a `RangeError`. Error responses from the upstream server are passed through unchanged.
 
 ## Observe request errors

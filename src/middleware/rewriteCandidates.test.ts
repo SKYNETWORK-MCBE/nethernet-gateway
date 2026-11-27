@@ -183,6 +183,38 @@ describe('rewriteCandidates', () => {
     expect(text).toBe(sdp());
   });
 
+  it.each([
+    [ADVERTISE, `c=IN IP4 ${ADVERTISE.ip}`],
+    [ADVERTISE_V6, `c=IN IP6 ${ADVERTISE_V6.ip}`],
+  ])('readdresses the connection line to the kept candidate of %o', async (mapAddress, line) => {
+    // The upstream writes its default candidate's address there, whatever family is advertised.
+    const { text } = await run({ mapAddress }, withConnection(`IP4 ${UPSTREAM}`, ...REFLEXIVE));
+
+    expect(connectionOf(text)).toBe(line);
+  });
+
+  it('readdresses the connection line to the first kept candidate without mapAddress', async () => {
+    const { text } = await run({}, withConnection('IP4 172.29.112.1', ...HOSTS));
+
+    expect(connectionOf(text)).toBe('c=IN IP6 2001:db8:142:be52:3fc0:6fa7:f85a:5a07');
+  });
+
+  it.each([
+    ['IP4 172.29.112.1', 'c=IN IP4 0.0.0.0'],
+    ['IP6 2001:db8:142:be52:3fc0:6fa7:f85a:5a07', 'c=IN IP6 ::'],
+  ])('hides the connection address %s when the drop fallback keeps none', async (from, line) => {
+    const answer = withConnection(from, HOSTS[0], HOSTS[1]);
+    const { text } = await run({ mapAddress: ADVERTISE, fallback: 'drop' }, answer);
+
+    expect(connectionOf(text)).toBe(line);
+  });
+
+  it('keeps the connection line of the original answer when no candidate survives', async () => {
+    const answer = withConnection('IP4 172.29.112.1', HOSTS[0], HOSTS[1]);
+
+    expect((await run({ mapAddress: ADVERTISE }, answer)).text).toBe(answer);
+  });
+
   it('returns answers without candidates untouched', async () => {
     const answer = 'v=0\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel';
 
@@ -428,6 +460,15 @@ function sdp(...candidates: string[]): string {
     'a=sctp-port:5000',
     'a=max-message-size:262144',
   ].join('\r\n');
+}
+
+// An answer whose connection line carries an address, as the upstream writes it.
+function withConnection(address: string, ...candidates: string[]): string {
+  return sdp(...candidates).replace('c=IN IP4 0.0.0.0', `c=IN ${address}`);
+}
+
+function connectionOf(sdp: string): string | undefined {
+  return sdp.split('\r\n').find((line) => line.startsWith('c='));
 }
 
 function candidatesOf(sdp: string): string[] {

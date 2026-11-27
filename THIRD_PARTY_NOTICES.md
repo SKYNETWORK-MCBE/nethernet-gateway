@@ -1,6 +1,6 @@
 # Third-party notices
 
-The bounded cleanup of unread request bodies in `src/http.ts` was adapted from
+The bounded cleanup of unread request bodies in `src/node/http.ts` was adapted from
 [`@hono/node-server`](https://github.com/honojs/node-server/blob/70250f780ec99d2ddc0dd8275a42f8e091e06e94/src/listener.ts).
 
 MIT License

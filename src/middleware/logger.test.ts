@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vite-plus/test';
+import { getRequestListener } from '../node';
 import { NetherNetGateway } from '../gateway';
 import { createTestServers, untrustedOffer } from '../test-helpers';
 import { logger } from './logger';
@@ -31,6 +32,8 @@ describe('logger', () => {
         req: new Request('http://localhost/test'),
         url: new URL('http://localhost/test'),
         remoteAddress: undefined,
+        env: undefined,
+        executionCtx: undefined,
       },
       async () => new Response(null, { status }),
     );
@@ -49,6 +52,8 @@ describe('logger', () => {
         req: new Request('http://localhost/test'),
         url: new URL('http://localhost/test'),
         remoteAddress: undefined,
+        env: undefined,
+        executionCtx: undefined,
       },
       async () => new Response(null, { status: 204 }),
     );
@@ -60,7 +65,7 @@ describe('logger', () => {
     const lines: string[] = [];
     const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
     gateway.use(logger((line) => lines.push(line)));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/missing?secret=value`);
 
@@ -77,7 +82,7 @@ describe('logger', () => {
     const lines: string[] = [];
     const gateway = new NetherNetGateway({ upstream });
     gateway.use(logger((line) => lines.push(line)));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/v1/join/9876543210123456789?source=test`, {
       method: 'POST',
@@ -98,7 +103,7 @@ describe('logger', () => {
     gateway.use(() => {
       throw new Error('middleware failed');
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/missing`);
 
@@ -116,7 +121,7 @@ describe('logger', () => {
         throw new Error('print failed');
       }),
     );
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/missing`);
 

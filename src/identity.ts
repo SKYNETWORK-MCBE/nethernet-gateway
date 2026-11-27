@@ -4,7 +4,8 @@ import {
   minecraftIdentityClaimsSchema,
   normalizeMinecraftIdentityClaims,
 } from './minecraft/claims';
-import type { NetherNetIdentity, UntrustedNetherNetIdentity, VerifyClientToken } from './types';
+import { decodeBase64Json } from './base64';
+import type { Awaitable, NetherNetIdentity, UntrustedNetherNetIdentity } from './types';
 
 const ASYMMETRIC_JWS_ALGORITHMS = [
   'ES256',
@@ -48,7 +49,7 @@ export function extractUntrustedClientIdentity(
     throw new Error('Invalid identity token');
   }
 
-  const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  const decoded = decodeBase64Json(payload);
   const claimsResult = v.safeParse(claimsSchema, decoded);
   const identityResult = v.safeParse(minecraftIdentityClaimsSchema, decoded);
   if (!claimsResult.success || !identityResult.success) {
@@ -65,7 +66,7 @@ export function extractUntrustedClientIdentity(
 // https://mojang.github.io/bedrock-protocol-docs/guides/nether-net-onboarding-guide/#51-validating-the-client-assertion-in-the-offer
 export async function verifyClientIdentity(
   offer: string,
-  verifyClientToken: VerifyClientToken,
+  verifyClientToken: (token: string) => Awaitable<NetherNetIdentity>,
 ): Promise<NetherNetIdentity | undefined> {
   const assertion = parseIdentityAssertion(offer);
   if (!assertion) return undefined;
@@ -90,10 +91,7 @@ function parseIdentityAssertion(offer: string): IdentityAssertion | undefined {
   if (identityLines.length !== 1) throw new Error('Multiple identity assertions');
 
   const encoded = identityLines[0].slice('a=identity:'.length);
-  const envelopeResult = v.safeParse(
-    identityEnvelopeSchema,
-    JSON.parse(Buffer.from(encoded, 'base64').toString('utf8')),
-  );
+  const envelopeResult = v.safeParse(identityEnvelopeSchema, decodeBase64Json(encoded));
   if (!envelopeResult.success) {
     throw new Error('Invalid identity envelope');
   }

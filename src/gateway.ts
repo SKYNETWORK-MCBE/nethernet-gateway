@@ -1,11 +1,14 @@
-import EventEmitter from 'node:events';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { proxyFetch } from 'httpxy';
+import { Emitter } from './emitter';
 import { InvalidRequestBodyError, RequestTooLargeError } from './errors';
 import { extractUntrustedClientIdentity, verifyClientIdentity } from './identity';
-import { createRequest, readBody, writeResponse, writeResponseWhileDraining } from './http';
+import { readBody } from './http';
 import type {
+  Awaitable,
+  BindingsOf,
   ClientInfo,
+  ExecutionContext,
+  GetConnInfo,
+  GatewayEnv,
   GatewayMiddleware,
   GatewayContext,
   JoinContext,
@@ -17,54 +20,94 @@ import type {
   VerifyClientToken,
 } from './types';
 
-export interface NetherNetGatewayEvents<Verified extends boolean = boolean> {
-  requestError: [event: NetherNetGatewayErrorEvent];
-  info: [event: NetherNetGatewayInfoEvent];
-  join: [event: NetherNetGatewayJoinEvent<Verified>];
+export interface NetherNetGatewayEvents<
+  E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
+> {
+  requestError: [event: NetherNetGatewayErrorEvent<E>];
+  info: [event: NetherNetGatewayInfoEvent<E>];
+  join: [event: NetherNetGatewayJoinEvent<E, Verified>];
 }
 
-export interface NetherNetGatewayOptions {
-  upstream: string | ((ctx: GatewayContext) => string);
+/** How long the upstream may take to respond before the gateway answers `504`. */
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 10_000;
+
+/**
+ * A binding that sends requests to the upstream, such as a Workers VPC service or a service
+ * binding on Cloudflare Workers.
+ */
+export interface UpstreamBinding {
+  fetch(request: Request): Awaitable<Response>;
+}
+
+/** An upstream base URL, or a binding to send the requests through. */
+export type Upstream = string | UpstreamBinding;
+
+export interface NetherNetGatewayOptions<E extends GatewayEnv = GatewayEnv> {
+  /**
+   * The upstream base URL, a binding to send the requests through, or a function that chooses
+   * either for each request. A binding, as in `(c) => c.env.BDS`, receives the client's URL with
+   * the `http:` scheme.
+   */
+  upstream: Upstream | ((c: GatewayContext<E>) => Awaitable<Upstream>);
+  /**
+   * Milliseconds the upstream may take to send its whole response before the gateway answers
+   * `504 Gateway Timeout`. Defaults to 10 seconds.
+   */
+  upstreamTimeout?: number;
   verifyClientToken?: VerifyClientToken;
+  /**
+   * Resolves `remoteAddress` from the request and `env`. Pass the `getConnInfo` exported by the
+   * subpath for your runtime, such as `nethernet-gateway/bun`.
+   */
+  getConnInfo?: GetConnInfo;
 }
 
-export type IsVerified<Options extends NetherNetGatewayOptions> = Options extends {
-  verifyClientToken: VerifyClientToken;
+/**
+ * Creates a gateway. Supply `Bindings` to type `c.env`, as in
+ * `new NetherNetGateway<{ Bindings: Env }>(options)`. Whether `c.identity` is always present follows
+ * from `verifyClientToken`, even when `Bindings` is given.
+ */
+export interface NetherNetGatewayConstructor {
+  new <E extends GatewayEnv = GatewayEnv>(
+    options: NetherNetGatewayOptions<E> & { verifyClientToken: VerifyClientToken },
+  ): NetherNetGateway<E, true>;
+  new <E extends GatewayEnv = GatewayEnv>(
+    options: NetherNetGatewayOptions<E> & { verifyClientToken?: undefined },
+  ): NetherNetGateway<E, false>;
+  new <E extends GatewayEnv = GatewayEnv>(
+    options: NetherNetGatewayOptions<E>,
+  ): NetherNetGateway<E, boolean>;
+  readonly prototype: NetherNetGateway;
 }
-  ? true
-  : Options extends Omit<NetherNetGatewayOptions, 'verifyClientToken'> & {
-        verifyClientToken?: undefined;
-      }
-    ? false
-    : boolean;
-export class NetherNetGateway<
-  out Options extends NetherNetGatewayOptions = NetherNetGatewayOptions,
-> extends EventEmitter<NetherNetGatewayEvents<IsVerified<Options>>> {
-  readonly options: Readonly<NetherNetGatewayOptions>;
+
+class Gateway<E extends GatewayEnv, out Verified extends boolean> extends Emitter<
+  NetherNetGatewayEvents<E, Verified>
+> {
+  readonly options: Readonly<NetherNetGatewayOptions<E>>;
 
   private readonly infoMiddlewares: GatewayMiddleware<ServerInfoContext>[] = [];
   private readonly joinMiddlewares: GatewayMiddleware<JoinContext>[] = [];
   private readonly requestMiddlewares: GatewayMiddleware[] = [];
-  server?: Server;
 
-  constructor(options: Options);
-  constructor(options: Options) {
+  constructor(options: NetherNetGatewayOptions<E>) {
     super();
     this.options = Object.freeze({ ...options });
     this.validateOptions();
   }
 
-  use(middleware: GatewayMiddleware): this;
-  use(selector: 'info', middleware: GatewayMiddleware<ServerInfoContext>): this;
-  use(selector: 'join', middleware: GatewayMiddleware<JoinContext<IsVerified<Options>>>): this;
+  use(middleware: GatewayMiddleware<GatewayContext<E>>): this;
+  use(selector: 'info', middleware: GatewayMiddleware<ServerInfoContext<E>>): this;
+  use(selector: 'join', middleware: GatewayMiddleware<JoinContext<E, Verified>>): this;
   use(
-    selector: 'info' | 'join' | GatewayMiddleware,
+    selector: 'info' | 'join' | GatewayMiddleware<GatewayContext<E>>,
     middleware?:
-      | GatewayMiddleware<ServerInfoContext>
-      | GatewayMiddleware<JoinContext<IsVerified<Options>>>,
+      | GatewayMiddleware<ServerInfoContext<E>>
+      | GatewayMiddleware<JoinContext<E, Verified>>,
   ): this {
+    // The context's env is whatever the runtime passed; `E` only describes it to middleware.
     if (typeof selector === 'function') {
-      this.requestMiddlewares.push(selector);
+      this.requestMiddlewares.push(selector as GatewayMiddleware);
       return this;
     }
 
@@ -75,7 +118,7 @@ export class NetherNetGateway<
     if (selector === 'info') {
       this.infoMiddlewares.push(middleware as GatewayMiddleware<ServerInfoContext>);
     } else if (selector === 'join') {
-      this.joinMiddlewares.push(middleware as GatewayMiddleware<JoinContext>);
+      this.joinMiddlewares.push(middleware as unknown as GatewayMiddleware<JoinContext>);
     } else {
       throw new TypeError(`Unknown middleware selector: ${String(selector)}`);
     }
@@ -83,99 +126,50 @@ export class NetherNetGateway<
     return this;
   }
 
-  async handleRequest(incoming: IncomingMessage, response: ServerResponse): Promise<void> {
-    const method = incoming.method ?? 'UNKNOWN';
-    const url = incoming.url ?? '/';
-    let drainAfterResponse = false;
-
-    let result: Response;
+  /**
+   * Handles a Fetch API request with the runtime's own arguments. It is bound to the gateway, so
+   * it can be passed to any server that takes a Fetch handler.
+   */
+  readonly fetch = async (
+    request: Request,
+    env?: BindingsOf<E>,
+    executionCtx?: ExecutionContext,
+  ): Promise<Response> => {
+    const { method, url } = request;
     if (method === 'CONNECT' || method === 'TRACE' || method === 'TRACK') {
-      incoming.resume();
-      result = new Response('Not Found', { status: 404 });
-    } else {
-      try {
-        const request = await createRequest(incoming);
-        const context: GatewayContext = {
-          req: request,
-          url: new URL(request.url),
-          remoteAddress: incoming.socket.remoteAddress,
-        };
-
-        try {
-          result = await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
-            try {
-              return await this.dispatch(requestContext);
-            } catch (error) {
-              this.emitRequestError('request', error, method, url);
-              return new Response('Internal Server Error', { status: 500 });
-            }
-          });
-        } catch (error) {
-          this.emitRequestError('middleware', error, method, url);
-          result = new Response('Internal Server Error', { status: 500 });
-        }
-      } catch (error) {
-        if (error instanceof RequestTooLargeError) {
-          // Keep the connection alive until the 413 is flushed, then discard the remaining body.
-          // Closing before that can make unread TCP data turn the response into an ECONNRESET.
-          drainAfterResponse = true;
-          result = new Response('Request body is too large', { status: 413 });
-        } else {
-          this.emitRequestError('request', error, method, url);
-          result = new Response('Internal Server Error', { status: 500 });
-        }
-      }
+      return new Response('Not Found', { status: 404 });
     }
 
+    const runtime = { env, executionCtx };
+    let context: GatewayContext;
     try {
-      if (drainAfterResponse) await writeResponseWhileDraining(incoming, response, result);
-      else await writeResponse(response, result);
+      context = {
+        req: mutableRequest(request),
+        url: new URL(url),
+        // Bun looks the address up by the original request object.
+        remoteAddress: this.options.getConnInfo?.({ req: request, env }).remote.address,
+        env,
+        executionCtx,
+      };
     } catch (error) {
-      this.emitRequestError('response', error, method, url);
-      if (!response.headersSent) {
-        try {
-          await writeResponse(response, new Response('Internal Server Error', { status: 500 }));
-        } catch (fallbackError) {
-          this.emitRequestError('response', fallbackError, method, url);
-          response.destroy();
-        }
-      } else {
-        response.destroy();
-      }
+      this.emitRequestError('request', error, method, url, runtime);
+      return new Response('Internal Server Error', { status: 500 });
     }
-  }
-
-  async listen(port: number, host?: string): Promise<void> {
-    if (this.server) {
-      throw new Error('NetherNetGateway is already listening');
-    }
-
-    const server = createServer(this.handleRequest.bind(this));
-    this.server = server;
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(port, host, () => {
-          server.off('error', reject);
-          resolve();
-        });
+      return await runMiddleware(this.requestMiddlewares, context, async (requestContext) => {
+        try {
+          return await this.dispatch(requestContext);
+        } catch (error) {
+          this.emitRequestError('request', error, method, url, runtime);
+          return new Response('Internal Server Error', { status: 500 });
+        }
       });
     } catch (error) {
-      this.server = undefined;
-      throw error;
+      this.emitRequestError('middleware', error, method, url, runtime);
+      return new Response('Internal Server Error', { status: 500 });
     }
-  }
-
-  async close(): Promise<void> {
-    const server = this.server;
-    if (!server) return;
-
-    this.server = undefined;
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-  }
+  };
 
   private async dispatch(requestContext: GatewayContext): Promise<Response> {
     const { req } = requestContext;
@@ -247,7 +241,6 @@ export class NetherNetGateway<
       method: request.method,
       headers,
       body,
-      signal: request.signal,
     });
 
     let untrustedIdentity;
@@ -260,18 +253,21 @@ export class NetherNetGateway<
       return new Response('Client identity is required', { status: 401 });
     }
 
-    const identity = await this.identity(offer);
+    const identity = await this.identity(offer, originalContext);
     if (identity instanceof Response) return identity;
 
     return { ...originalContext, req: request, url, networkId, offer, untrustedIdentity, identity };
   }
 
-  private async identity(offer: string): Promise<NetherNetIdentity | undefined | Response> {
+  private async identity(
+    offer: string,
+    context: GatewayContext,
+  ): Promise<NetherNetIdentity | undefined | Response> {
     const verifyClientToken = this.options.verifyClientToken;
     if (!verifyClientToken) return undefined;
 
     try {
-      return await verifyClientIdentity(offer, verifyClientToken);
+      return await verifyClientIdentity(offer, (token) => verifyClientToken(token, context));
     } catch {
       return new Response('Invalid client identity', { status: 401 });
     }
@@ -283,20 +279,42 @@ export class NetherNetGateway<
     try {
       const upstream =
         typeof this.options.upstream === 'function'
-          ? this.options.upstream(context)
+          ? await this.options.upstream(context as GatewayContext<E>)
           : this.options.upstream;
-      if (!request.body) return await proxyFetch(upstream, request);
+      const binding = typeof upstream === 'string' ? undefined : upstream;
+      if (binding && typeof binding.fetch !== 'function') {
+        throw new TypeError('upstream must be a URL or a binding with a fetch method');
+      }
+      const target = binding
+        ? bindingUrl(new URL(request.url))
+        : upstreamUrl(upstream as string, new URL(request.url));
 
-      // BDS requires a content length and does not read httpxy's chunked request body.
-      const body = Buffer.from(await request.arrayBuffer());
       const headers = new Headers(request.headers);
-      headers.delete('transfer-encoding');
-      headers.set('content-length', String(body.byteLength));
+      // The runtime derives these from the target URL and the buffered body.
+      for (const name of ['host', 'content-length', 'transfer-encoding', ...HOP_BY_HOP]) {
+        headers.delete(name);
+      }
+      // BDS requires a content length and does not read a chunked request body, so buffer it.
+      const body = request.body ? await request.arrayBuffer() : undefined;
 
-      return await proxyFetch(upstream, request, { body, headers });
+      const signal = AbortSignal.timeout(
+        this.options.upstreamTimeout ?? DEFAULT_UPSTREAM_TIMEOUT_MS,
+      );
+      const init = { method: request.method, headers, body, redirect: 'manual', signal } as const;
+      const response = binding
+        ? // A binding may ignore the signal, so the timeout is enforced here as well.
+          await withTimeout(binding.fetch(new Request(target, init)), signal)
+        : await fetch(target, init);
+      if (!(response instanceof Response)) {
+        throw new TypeError('The upstream binding must return a Response');
+      }
+      // Buffer the small signaling response so the timeout covers its body as well.
+      return forwardResponse(response, await withTimeout(response.arrayBuffer(), signal));
     } catch (error) {
-      this.emitRequestError('upstream', error, request.method, request.url);
-      return new Response('Bad Gateway', { status: 502 });
+      this.emitRequestError('upstream', error, request.method, request.url, context);
+      return isTimeout(error)
+        ? new Response('Gateway Timeout', { status: 504 })
+        : new Response('Bad Gateway', { status: 502 });
     }
   }
 
@@ -320,7 +338,7 @@ export class NetherNetGateway<
         replace,
       );
     } catch (error) {
-      this.emitRequestError('middleware', error, context.req.method, context.req.url);
+      this.emitRequestError('middleware', error, context.req.method, context.req.url, context);
       response = new Response('Internal Server Error', { status: 500 });
     }
     observation?.(response.status);
@@ -335,12 +353,14 @@ export class NetherNetGateway<
       url,
       remoteAddress: context.remoteAddress,
       headers: new Headers(context.req.headers),
+      env: context.env,
+      executionCtx: context.executionCtx,
     };
     return (status) => {
       try {
         if (event === 'join') {
           const join = context as JoinContext;
-          (this as EventEmitter<NetherNetGatewayEvents>).emit('join', {
+          (this as Emitter<NetherNetGatewayEvents>).emit('join', {
             ...common,
             status,
             networkId: join.networkId,
@@ -348,7 +368,7 @@ export class NetherNetGateway<
             identity: join.identity,
           });
         } else {
-          this.emit('info', {
+          (this as Emitter<NetherNetGatewayEvents>).emit('info', {
             ...common,
             status,
             client: (context as ServerInfoContext).client,
@@ -356,7 +376,7 @@ export class NetherNetGateway<
         }
       } catch (error) {
         try {
-          this.emitRequestError('listener', error, context.req.method, url);
+          this.emitRequestError('listener', error, context.req.method, url, context);
         } catch {
           // Even a failing error observer must not change the HTTP result.
         }
@@ -369,8 +389,16 @@ export class NetherNetGateway<
     error: unknown,
     method: string,
     url: string,
+    runtime: { env: unknown; executionCtx: ExecutionContext | undefined },
   ): void {
-    this.emit('requestError', { source, error, method, url: requestTarget(url) });
+    (this as Emitter<NetherNetGatewayEvents>).emit('requestError', {
+      source,
+      error,
+      method,
+      url: requestTarget(url),
+      env: runtime.env,
+      executionCtx: runtime.executionCtx,
+    });
   }
 
   private validateOptions(): void {
@@ -382,7 +410,82 @@ export class NetherNetGateway<
         throw new Error('Invalid upstream URL');
       }
     }
+
+    const timeout = this.options.upstreamTimeout;
+    if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
+      throw new TypeError('upstreamTimeout must be a positive finite number');
+    }
   }
+}
+
+export type NetherNetGateway<
+  E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
+> = Gateway<E, Verified>;
+export const NetherNetGateway = Gateway as NetherNetGatewayConstructor;
+
+// Runtime servers such as Cloudflare Workers pass immutable headers. Copy from the URL rather than
+// the Request so the copy does not follow its signal, which some runtimes abort once they respond.
+function mutableRequest(request: Request): Request {
+  return new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+    duplex: 'half',
+  } as RequestInit);
+}
+
+const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'upgrade'];
+
+// A binding picks its own destination, so only the scheme matters: BDS serves plain HTTP.
+function bindingUrl(requestUrl: URL): URL {
+  const target = new URL(requestUrl);
+  target.protocol = 'http:';
+  return target;
+}
+
+function upstreamUrl(upstream: string, requestUrl: URL): URL {
+  const target = new URL(upstream);
+  // Requests are forwarded below the upstream's base path.
+  const basePath = target.pathname.replace(/\/+$/u, '');
+  target.pathname = basePath + requestUrl.pathname;
+  target.search = requestUrl.search;
+  return target;
+}
+
+// Rejects with the signal's reason once it aborts, leaving the pending work to the runtime.
+async function withTimeout<T>(work: Awaitable<T>, signal: AbortSignal): Promise<T> {
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason as Error);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === 'TimeoutError';
+}
+
+function forwardResponse(response: Response, body: ArrayBuffer): Response {
+  const headers = new Headers(response.headers);
+  for (const name of ['transfer-encoding', ...HOP_BY_HOP]) headers.delete(name);
+  // Fetch decodes compressed bodies, so these headers no longer describe the body it returns.
+  if (headers.has('content-encoding')) {
+    headers.delete('content-encoding');
+    headers.delete('content-length');
+  }
+  const hasBody = response.status !== 204 && response.status !== 304;
+  return new Response(hasBody ? body : null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function requestTarget(value: string): string {

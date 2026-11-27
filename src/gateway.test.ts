@@ -7,6 +7,8 @@ import {
 import { connect, type Socket } from 'node:net';
 import { exportJWK, FlattenedSign, generateKeyPair } from 'jose';
 import { afterEach, describe, expect, expectTypeOf, it } from 'vite-plus/test';
+import { getConnInfo as getWorkersConnInfo } from './cloudflare-workers';
+import { getConnInfo, getRequestListener, serve as serveNode } from './node';
 import { NetherNetGateway } from './gateway';
 import {
   createTestServers,
@@ -50,7 +52,7 @@ describe('NetherNetGateway', () => {
       order.push(`after:${response.status}`);
       return response;
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const blocked = await fetch(`${address}/v1/join?block`);
     const allowed = await fetch(`${address}/v1/join`);
@@ -69,7 +71,7 @@ describe('NetherNetGateway', () => {
     gateway.use((c, next) =>
       c.url.pathname === '/early' ? new Response(null, { status: 204 }) : next(),
     );
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const agent = new Agent({ keepAlive: true, maxSockets: 1 });
 
     try {
@@ -93,7 +95,7 @@ describe('NetherNetGateway', () => {
       res.end('ok');
     });
     const gateway = new NetherNetGateway({ upstream });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     await abortRequest(address);
     const trace = await sendHttp(address, '/v1/join', { method: 'TRACE' });
@@ -115,7 +117,7 @@ describe('NetherNetGateway', () => {
     const started = new Promise<void>((resolve) => (markStarted = resolve));
     const address = await serve((req, res) => {
       markStarted();
-      return gateway.handleRequest(req, res);
+      return getRequestListener(gateway.fetch)(req, res);
     });
     const server = servers.at(-1);
     if (!server) throw new Error('Missing gateway test server');
@@ -144,7 +146,7 @@ describe('NetherNetGateway', () => {
         }),
       ),
     );
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/rewritten`);
 
@@ -169,7 +171,7 @@ describe('NetherNetGateway', () => {
       seen.push(await c.req.text());
       return next();
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const offer = untrustedOffer('offer');
 
     const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
@@ -201,7 +203,7 @@ describe('NetherNetGateway', () => {
       c.req.headers.set('x-join', 'join');
       return next();
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const offer = untrustedOffer('offer');
 
     const response = await sendHttp(address, '/v1/join/1', {
@@ -216,7 +218,8 @@ describe('NetherNetGateway', () => {
     expect(received?.['x-remove']).toBeUndefined();
     expect(received?.['content-length']).toBe(String(Buffer.byteLength(offer)));
     expect(received?.['transfer-encoding']).toBeUndefined();
-    expect(cookies).toEqual(['s=1', 't=2']);
+    // Fetch combines repeated request header fields into one.
+    expect(cookies).toEqual(['s=1, t=2']);
   });
 
   it('runs info middleware around the upstream response', async () => {
@@ -243,7 +246,7 @@ describe('NetherNetGateway', () => {
     });
     gateway.use('join', () => new Response('wrong stack', { status: 418 }));
 
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const response = await fetch(`${address}/v1/join`);
 
     expect(await response.json()).toEqual({ ...serverInfo, name: 'Gateway' });
@@ -262,7 +265,7 @@ describe('NetherNetGateway', () => {
       forwarded = req.headers['x-observed'] as string | undefined;
       res.end('ok');
     });
-    const gateway = new NetherNetGateway({ upstream });
+    const gateway = new NetherNetGateway({ upstream, getConnInfo });
     const seen: NetherNetGatewayInfoEvent[] = [];
     let onceCalls = 0;
     gateway.use('info', (c, next) => {
@@ -281,7 +284,7 @@ describe('NetherNetGateway', () => {
       seen.push(event);
       event.headers.set('x-observed', 'listener');
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     expect((await fetch(`${address}/v1/join`)).status).toBe(200);
     expect((await fetch(`${address}/v1/join`)).status).toBe(200);
@@ -305,7 +308,7 @@ describe('NetherNetGateway', () => {
       return next();
     });
     gateway.on('info', (event) => events.push(event.client));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     await fetch(
       `${address}/v1/join?version=1.26.60.30&protocol=2225&platform=8&id=5779639000310264761`,
@@ -346,7 +349,7 @@ describe('NetherNetGateway', () => {
     gateway.on('info', (event) => {
       observed = event.client;
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     await fetch(`${address}/v1/join?version=1.26.50.20&platform=8`);
 
@@ -379,7 +382,7 @@ describe('NetherNetGateway', () => {
       );
     });
     gateway.on('join', (event) => events.push(event));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     expect(
       (
@@ -428,7 +431,7 @@ describe('NetherNetGateway', () => {
     });
     gateway.on('join', (event) => joins.push(event));
     gateway.on('requestError', (event) => errors.push(event));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     expect((await fetch(`${address}/v1/join?blocked=1`)).status).toBe(403);
     expect(
@@ -457,10 +460,10 @@ describe('NetherNetGateway', () => {
       return response;
     });
     gateway.on('join', (event) => statuses.push(event.status));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const unreachable = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
     unreachable.on('join', (event) => statuses.push(event.status));
-    const unreachableAddress = await serve(unreachable.handleRequest.bind(unreachable));
+    const unreachableAddress = await serve(getRequestListener(unreachable.fetch));
 
     for (const networkId of ['ok', 'rejected', 'thrown']) {
       await fetch(`${address}/v1/join/${networkId}`, { method: 'POST', body: untrustedOffer() });
@@ -495,7 +498,7 @@ describe('NetherNetGateway', () => {
         }),
       );
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const primaryResponse = await fetch(`${address}/v1/join`);
     const secondaryResponse = await fetch(`${address}/v1/join?replace=1`);
@@ -514,19 +517,225 @@ describe('NetherNetGateway', () => {
     });
     const errors: NetherNetGatewayErrorEvent[] = [];
     gateway.on('requestError', (event) => errors.push(event));
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/v1/join`);
 
     expect(response.status).toBe(502);
     expect(errors).toEqual([
-      {
+      expect.objectContaining({
         source: 'upstream',
         error: failure,
         method: 'GET',
         url: '/v1/join',
-      },
+      }),
     ]);
+  });
+
+  it('awaits an async upstream resolver', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('ok');
+    });
+    const gateway = new NetherNetGateway({
+      upstream: async () => {
+        await delay(1);
+        return upstream;
+      },
+    });
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
+  });
+
+  it('sends the upstream request through a binding', async () => {
+    const sent: { url: string; method: string; body: string; host: string | null }[] = [];
+    class Binding {
+      private readonly answer = 'answer';
+      // Declared like a platform Fetcher, and reads `this` as a real binding does.
+      async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
+        const request = new Request(input, init);
+        sent.push({
+          url: request.url,
+          method: request.method,
+          body: await request.text(),
+          host: request.headers.get('host'),
+        });
+        return new Response(this.answer, { headers: { 'x-upstream': 'binding' } });
+      }
+    }
+    interface Env {
+      BDS: Binding;
+    }
+    const env: Env = { BDS: new Binding() };
+    const gateway = new NetherNetGateway<{ Bindings: Env }>({ upstream: (c) => c.env.BDS });
+    const statuses: number[] = [];
+    gateway.on('join', (event) => statuses.push(event.status));
+
+    const offer = untrustedOffer();
+    const info = await gateway.fetch(new Request('https://gw.example/v1/join?version=1'), env);
+    const join = await gateway.fetch(
+      new Request('https://gw.example/v1/join/1', { method: 'POST', body: offer }),
+      env,
+    );
+
+    expect(info.status).toBe(200);
+    expect(join.headers.get('x-upstream')).toBe('binding');
+    expect(await join.text()).toBe('answer');
+    expect(statuses).toEqual([200]);
+    expect(sent).toEqual([
+      { url: 'http://gw.example/v1/join?version=1', method: 'GET', body: '', host: null },
+      { url: 'http://gw.example/v1/join/1', method: 'POST', body: offer, host: null },
+    ]);
+  });
+
+  it('accepts a binding without a resolver function', async () => {
+    const gateway = new NetherNetGateway({ upstream: { fetch: () => new Response('ok') } });
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(await response.text()).toBe('ok');
+  });
+
+  it('answers 504 when the binding ignores the timeout signal', async () => {
+    const gateway = new NetherNetGateway({
+      upstream: { fetch: () => new Promise<Response>(() => {}) },
+      upstreamTimeout: 50,
+    });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    gateway.on('requestError', (event) => errors.push(event));
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(response.status).toBe(504);
+    expect(errors).toEqual([expect.objectContaining({ source: 'upstream' })]);
+  });
+
+  it.each([
+    ['throws', { fetch: () => Promise.reject(new Error('unreachable')) }],
+    ['returns no Response', { fetch: () => undefined as unknown as Response }],
+    ['has no fetch method', {} as never],
+  ])('answers 502 when the binding %s', async (_name, upstream) => {
+    const gateway = new NetherNetGateway({ upstream });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    gateway.on('requestError', (event) => errors.push(event));
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+
+    expect(response.status).toBe(502);
+    expect(errors).toEqual([expect.objectContaining({ source: 'upstream' })]);
+  });
+
+  it('passes the request context to verifyClientToken', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
+    });
+    const env = { NAME: 'bindings' };
+    const seen: unknown[] = [];
+    const gateway = new NetherNetGateway({
+      upstream,
+      verifyClientToken: (_token, c) => {
+        seen.push([c.env, c.url.pathname, c.req.method]);
+        throw new Error('rejected');
+      },
+    });
+
+    const response = await gateway.fetch(
+      new Request('http://localhost/v1/join/1', { method: 'POST', body: untrustedOffer() }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(seen).toEqual([[env, '/v1/join/1', 'POST']]);
+  });
+
+  it('answers 504 when the upstream exceeds upstreamTimeout', async () => {
+    const upstream = await serve((_req, res) => {
+      // Send the headers in time, but never finish the body.
+      res.writeHead(200);
+      res.write('partial');
+    });
+    const gateway = new NetherNetGateway({ upstream, upstreamTimeout: 50 });
+    const errors: NetherNetGatewayErrorEvent[] = [];
+    const statuses: number[] = [];
+    gateway.on('requestError', (event) => errors.push(event));
+    gateway.on('info', (event) => statuses.push(event.status));
+
+    const response = await gateway.fetch(new Request('http://localhost/v1/join'));
+    for (const server of servers) server.closeAllConnections();
+
+    expect(response.status).toBe(504);
+    expect(statuses).toEqual([504]);
+    expect(errors).toEqual([
+      expect.objectContaining({
+        source: 'upstream',
+        error: expect.objectContaining({ name: 'TimeoutError' }),
+      }),
+    ]);
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects upstreamTimeout %s',
+    (upstreamTimeout) => {
+      expect(
+        () => new NetherNetGateway({ upstream: 'http://127.0.0.1:1', upstreamTimeout }),
+      ).toThrow(/upstreamTimeout/u);
+    },
+  );
+
+  it('passes env and executionCtx to every event', async () => {
+    const upstream = await serve((_req, res) => {
+      res.end('answer');
+    });
+    interface Env {
+      NAME: string;
+    }
+    const env: Env = { NAME: 'bindings' };
+    const executionCtx = { waitUntil: () => {} };
+    const gateway = new NetherNetGateway<{ Bindings: Env }>({ upstream });
+    const seen: unknown[] = [];
+    gateway.on('info', (event) => {
+      expectTypeOf(event.env).toEqualTypeOf<Env>();
+      seen.push(['info', event.env, event.executionCtx]);
+      throw new Error('listener failed');
+    });
+    gateway.on('join', (event) => seen.push(['join', event.env, event.executionCtx]));
+    gateway.on('requestError', (event) => {
+      expectTypeOf(event.env).toEqualTypeOf<Env>();
+      seen.push([event.source, event.env, event.executionCtx]);
+    });
+
+    await gateway.fetch(new Request('http://localhost/v1/join'), env, executionCtx);
+    await gateway.fetch(
+      new Request('http://localhost/v1/join/1', { method: 'POST', body: untrustedOffer() }),
+      env,
+      executionCtx,
+    );
+
+    expect(seen).toEqual([
+      ['info', env, executionCtx],
+      ['listener', env, executionCtx],
+      ['join', env, executionCtx],
+    ]);
+  });
+
+  it('removes a once listener by the function that was registered', () => {
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    let calls = 0;
+    const listener = () => {
+      calls++;
+    };
+
+    gateway.once('requestError', listener);
+    gateway.off('requestError', listener);
+    gateway.once('requestError', listener);
+    const event = { source: 'request', error: null, method: 'GET', url: '/' } as never;
+    gateway.emit('requestError', event);
+    gateway.emit('requestError', event);
+
+    expect(calls).toBe(1);
+    expect(gateway.listenerCount('requestError')).toBe(0);
   });
 
   it('proxies join metadata and SDP with an untrusted identity', async () => {
@@ -552,7 +761,7 @@ describe('NetherNetGateway', () => {
       return next();
     });
 
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const offer = untrustedOffer('offer');
     const response = await fetch(`${address}/v1/join/network%20id?source=test`, {
       method: 'POST',
@@ -604,6 +813,52 @@ describe('NetherNetGateway', () => {
     expectTypeOf(unknown).not.toExtend<typeof verified>();
   });
 
+  it('types c.env from the supplied Bindings without losing the verifier state', () => {
+    interface Env {
+      UPSTREAM: string;
+    }
+    const verifier: VerifyClientToken = () => {
+      throw new Error('unused');
+    };
+    const verified = new NetherNetGateway<{ Bindings: Env }>({
+      upstream: (c) => {
+        expectTypeOf(c.env).toEqualTypeOf<Env>();
+        return c.env.UPSTREAM;
+      },
+      verifyClientToken: verifier,
+    });
+    const unverified = new NetherNetGateway<{ Bindings: Env }>({ upstream: (c) => c.env.UPSTREAM });
+    const untyped = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+
+    verified.use((c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      return next();
+    });
+    verified.use('info', (c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      return next();
+    });
+    verified.use('join', (c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      expectTypeOf(c.identity).toEqualTypeOf<NetherNetIdentity>();
+      return next();
+    });
+    unverified.use('join', (c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<Env>();
+      expectTypeOf(c).not.toHaveProperty('identity');
+      return next();
+    });
+    untyped.use((c, next) => {
+      expectTypeOf(c.env).toEqualTypeOf<unknown>();
+      return next();
+    });
+
+    expectTypeOf(verified).toEqualTypeOf<NetherNetGateway<{ Bindings: Env }, true>>();
+    expectTypeOf(unverified).toEqualTypeOf<NetherNetGateway<{ Bindings: Env }, false>>();
+    expectTypeOf([verified, unverified, untyped]).toExtend<NetherNetGateway[]>();
+    expect(verified).toBeInstanceOf(NetherNetGateway);
+  });
+
   it('exposes untrusted identity claims without configuring a verifier', async () => {
     const upstream = await serve((_req, res) => {
       res.end('answer');
@@ -619,7 +874,7 @@ describe('NetherNetGateway', () => {
       mid: '0000000000000000',
       xname: 'Player',
     };
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/v1/join/1`, {
       method: 'POST',
@@ -656,7 +911,7 @@ describe('NetherNetGateway', () => {
       return new Response((await response.text()).slice(0, 6), response);
     });
 
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
 
     expect(received).toBe(`rewritten ${offer}`);
@@ -682,7 +937,7 @@ describe('NetherNetGateway', () => {
       return next();
     });
 
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
 
     expect(seen).toEqual([{ offer: `rewritten ${offer}`, body: `rewritten ${offer}` }]);
@@ -696,7 +951,7 @@ describe('NetherNetGateway', () => {
       res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
     const offer = `\uFEFF${untrustedOffer()}`;
 
     const response = await fetch(`${address}/v1/join/1`, { method: 'POST', body: offer });
@@ -748,7 +1003,7 @@ describe('NetherNetGateway', () => {
       });
       return next();
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const response = await fetch(`${address}/v1/join/original`, {
       method: 'POST',
@@ -779,9 +1034,9 @@ describe('NetherNetGateway', () => {
         }),
       ),
     );
-    const oversizedAddress = await serve(oversized.handleRequest.bind(oversized));
+    const oversizedAddress = await serve(getRequestListener(oversized.fetch));
     const invalidUtf8 = new NetherNetGateway({ upstream });
-    const invalidUtf8Address = await serve(invalidUtf8.handleRequest.bind(invalidUtf8));
+    const invalidUtf8Address = await serve(getRequestListener(invalidUtf8.fetch));
 
     const oversizedResponse = await fetch(`${oversizedAddress}/v1/join/1`, {
       method: 'POST',
@@ -801,7 +1056,7 @@ describe('NetherNetGateway', () => {
       res.end('answer');
     });
     const gateway = new NetherNetGateway({ upstream });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const missing = await fetch(`${address}/v1/join/1`, {
       method: 'POST',
@@ -840,7 +1095,7 @@ describe('NetherNetGateway', () => {
     });
     let requestErrors = 0;
     gateway.on('requestError', () => requestErrors++);
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     const invalidToken = await fetch(`${address}/v1/join/1`, {
       method: 'POST',
@@ -869,14 +1124,12 @@ describe('NetherNetGateway', () => {
     brokenMiddleware.use('info', () => {
       throw new Error('boom');
     });
-    const brokenMiddlewareAddress = await serve(
-      brokenMiddleware.handleRequest.bind(brokenMiddleware),
-    );
+    const brokenMiddlewareAddress = await serve(getRequestListener(brokenMiddleware.fetch));
 
     const unreachable = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
     const upstreamErrors: NetherNetGatewayErrorEvent[] = [];
     unreachable.on('requestError', (event) => upstreamErrors.push(event));
-    const unreachableAddress = await serve(unreachable.handleRequest.bind(unreachable));
+    const unreachableAddress = await serve(getRequestListener(unreachable.fetch));
 
     expect((await fetch(`${brokenMiddlewareAddress}/v1/join?global-error=1`)).status).toBe(500);
     expect((await fetch(`${brokenMiddlewareAddress}/v1/join`)).status).toBe(500);
@@ -915,13 +1168,18 @@ describe('NetherNetGateway', () => {
       await next();
       return next();
     });
-    const address = await serve(gateway.handleRequest.bind(gateway));
+    const address = await serve(getRequestListener(gateway.fetch));
 
     expect((await fetch(`${address}/v1/join`)).status).toBe(500);
 
     const standalone = new NetherNetGateway({ upstream });
-    await standalone.listen(0, '127.0.0.1');
-    await standalone.close();
+    const server = await serveNode({ fetch: standalone.fetch, port: 0, hostname: '127.0.0.1' });
+    const { port } = server.address() as { port: number };
+    // A port in use rejects instead of crashing the process with an unhandled 'error' event.
+    await expect(
+      serveNode({ fetch: standalone.fetch, port, hostname: '127.0.0.1' }),
+    ).rejects.toMatchObject({ code: 'EADDRINUSE' });
+    await closeServer(server);
   });
 
   it('rejects incomplete and unknown middleware registrations', () => {
@@ -931,7 +1189,70 @@ describe('NetherNetGateway', () => {
     expect(() => use('info')).toThrow(/middleware function/u);
     expect(() => use('unknown', () => new Response())).toThrow(/Unknown middleware selector/u);
   });
+
+  it('accepts requests with immutable headers, as Workers passes them', async () => {
+    const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:1' });
+    gateway.use((c, next) => {
+      c.req.headers.set('x-global', 'global');
+      return next();
+    });
+    let seen: string | null = null;
+    gateway.use('info', (c) => {
+      seen = c.req.headers.get('x-global');
+      return new Response('OK');
+    });
+
+    const response = await gateway.fetch(new ImmutableHeadersRequest('http://localhost/v1/join'));
+
+    expect(response.status).toBe(200);
+    expect(seen).toBe('global');
+  });
+
+  it('handles Fetch requests directly with Workers-style env and execution context', async () => {
+    const upstream = await serve((req, res) => {
+      res.setHeader('x-path', req.url ?? '');
+      res.end('ok');
+    });
+    const gateway = new NetherNetGateway({
+      upstream: `${upstream}/base/`,
+      getConnInfo: getWorkersConnInfo,
+    });
+    const env = { UPSTREAM: upstream };
+    const waitUntil: Promise<unknown>[] = [];
+    const executionCtx = { waitUntil: (promise: Promise<unknown>) => waitUntil.push(promise) };
+    const seen: unknown[] = [];
+    gateway.use('info', (c, next) => {
+      seen.push(c.env, c.executionCtx, c.remoteAddress);
+      c.executionCtx?.waitUntil(Promise.resolve());
+      return next();
+    });
+
+    const response = await gateway.fetch(
+      new Request('https://gateway.example/v1/join?version=1', {
+        headers: { 'cf-connecting-ip': '198.51.100.7' },
+      }),
+      env,
+      executionCtx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-path')).toBe('/base/v1/join?version=1');
+    expect(seen).toEqual([env, executionCtx, '198.51.100.7']);
+    expect(waitUntil).toHaveLength(1);
+  });
 });
+
+// Runtime servers hand out requests whose headers have the "immutable" guard.
+class ImmutableHeadersRequest extends Request {
+  override get headers(): Headers {
+    const headers = new Headers(super.headers);
+    const reject = () => {
+      throw new TypeError('Cannot change headers: headers are immutable');
+    };
+    Object.assign(headers, { append: reject, delete: reject, set: reject });
+    return headers;
+  }
+}
 
 const serverInfo: NetherNetServerInfo = {
   name: 'Upstream',

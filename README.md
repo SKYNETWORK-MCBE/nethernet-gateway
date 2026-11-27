@@ -2,7 +2,7 @@
 
 A middleware-first proxy for Minecraft NetherNet HTTP signaling.
 
-`nethernet-gateway` handles the two NetherNet signaling operations and delegates HTTP forwarding to [`httpxy`](https://github.com/unjs/httpxy):
+`nethernet-gateway` handles the two NetherNet signaling operations and forwards them upstream with the Fetch API, so it runs on Node.js and on Cloudflare Workers:
 
 - `GET /v1/join` — server information
 - `POST /v1/join/{networkId}` — SDP offer and answer exchange
@@ -25,15 +25,75 @@ bun add nethernet-gateway
 
 Every join offer must include a structurally valid client identity assertion. Cryptographic verification against a trusted token issuer is opt-in.
 
+The gateway exposes a `fetch(request, env, executionCtx)` handler that runs on any
+runtime with the Fetch API. Each runtime's subpath exports `getConnInfo`, which reads the client
+address from the arguments that runtime passes to `fetch`.
+
+### Bun
+
 ```ts
 import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo } from 'nethernet-gateway/bun';
 
 const gateway = new NetherNetGateway({
   upstream: 'http://127.0.0.1:19132',
+  getConnInfo,
 });
 
-await gateway.listen(8080);
+export default { port: 8080, fetch: gateway.fetch };
 ```
+
+### Node.js
+
+Node.js has no Fetch-based server, so `nethernet-gateway/node` also provides `serve`.
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo, serve } from 'nethernet-gateway/node';
+
+const gateway = new NetherNetGateway({
+  upstream: 'http://127.0.0.1:19132',
+  getConnInfo,
+});
+
+const server = await serve({ fetch: gateway.fetch, port: 8080 });
+```
+
+`serve` resolves with the `node:http` `Server` once it is listening, and rejects if it cannot
+listen, such as when the port is in use. To use an existing server, pass
+`getRequestListener(gateway.fetch)` to `createServer`.
+
+### Cloudflare Workers
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo } from 'nethernet-gateway/cloudflare-workers';
+
+interface Env {
+  UPSTREAM: string;
+}
+
+const gateway = new NetherNetGateway<{ Bindings: Env }>({
+  upstream: (c) => c.env.UPSTREAM,
+  getConnInfo,
+});
+
+export default gateway;
+```
+
+The upstream must be reachable from Cloudflare, for example through a Cloudflare Tunnel, or
+through a [binding](#reach-the-upstream-through-a-binding). Only the
+signaling goes through the Worker; the game connection still runs directly between the client and
+BDS. The `nodejs_compat` flag is not required.
+
+`getConnInfo` sets `c.remoteAddress`. Without it, `remoteAddress` is `undefined`. Each middleware
+can also read the second and third `fetch` arguments as `c.env` and `c.executionCtx`.
+
+Supply the type of `c.env` as `Bindings` when creating the gateway, as in
+`new NetherNetGateway<{ Bindings: Env }>(options)`. It types `c.env` in `upstream` and in every
+middleware, including the rules of `rateLimitBinding`. Without it, `c.env` is `unknown`. Supplying
+it does not change the identity types: `c.identity` is still always present exactly when
+`verifyClientToken` is given.
 
 Only the NetherNet signaling endpoints are proxied. Other paths return `404`.
 
@@ -52,7 +112,39 @@ const gateway = new NetherNetGateway({
 });
 ```
 
-The function runs after request middleware calls `next()`, immediately before the request is proxied. If middleware passes a replacement `Request` to `next()`, the function receives the replacement request and URL. It is not called when middleware returns an early response.
+The function runs after request middleware calls `next()`, immediately before the request is proxied. If middleware passes a replacement `Request` to `next()`, the function receives the replacement request and URL. It is not called when middleware returns an early response. The function may be async, for example to look the upstream up in a key-value store.
+
+### Limit how long the upstream may take
+
+If the upstream does not send its whole response within `upstreamTimeout` milliseconds, the gateway answers `504 Gateway Timeout` and emits `requestError` with source `upstream`. The default is 10 seconds.
+
+```ts
+const gateway = new NetherNetGateway({
+  upstream: 'http://127.0.0.1:19132',
+  upstreamTimeout: 5_000,
+});
+```
+
+### Reach the upstream through a binding
+
+`upstream` also takes a binding, an object with a `fetch` method, to send the requests through. On
+Cloudflare Workers this reaches a BDS that has no public address, through a
+[Workers VPC](https://developers.cloudflare.com/workers-vpc/) service or a service binding.
+
+```ts
+interface Env {
+  BDS: Fetcher;
+}
+
+const gateway = new NetherNetGateway<{ Bindings: Env }>({
+  upstream: (c) => c.env.BDS,
+});
+```
+
+The binding receives the client's URL with the `http:` scheme, since it chooses the destination
+itself, and a signal that aborts after `upstreamTimeout`. The timeout still applies when the binding
+does not honor the signal. To send a different URL, pass your own object:
+`{ fetch: (request) => c.env.BDS.fetch(new Request(url, request)) }`.
 
 ## Middleware
 
@@ -72,12 +164,17 @@ gateway.use(async (c, next) => {
 
 Every join request that reaches BDS may reserve a UDP port. An attacker can exhaust the configured
 port range by repeatedly requesting offers, so use `rateLimit` to limit join requests. The limiter
-uses a sliding window and can apply multiple limits to each request.
+uses a sliding window and can apply multiple limits to each request. `rateLimit.ip` needs a
+gateway with `getConnInfo`; without it, the request fails with `500` instead of sharing one bucket.
+
+The counters live in memory. On Cloudflare Workers each isolate keeps its own counters, so use
+`rateLimitBinding` there instead (see "Rate limit with Workers Rate Limiting bindings").
 
 ```ts
 import { NetherNetGateway, rateLimit } from 'nethernet-gateway';
+import { getConnInfo } from 'nethernet-gateway/node';
 
-const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:19132' });
+const gateway = new NetherNetGateway({ upstream: 'http://127.0.0.1:19132', getConnInfo });
 gateway.use(
   'join',
   rateLimit({
@@ -121,7 +218,7 @@ gateway.use(
 );
 ```
 
-The built-in `ip` key limits each direct TCP peer by IPv4 address or IPv6 `/64` prefix. IPv4-mapped
+The built-in `ip` key limits each peer reported by `getConnInfo` by IPv4 address or IPv6 `/64` prefix. IPv4-mapped
 IPv6 addresses share the corresponding IPv4 counter. Peers within the same IPv6 `/64` share a
 counter. The `global` key limits the total request rate. Choose limits appropriate for the paths
 covered by each middleware. A request must have capacity under every applicable rule before it
@@ -159,6 +256,65 @@ memory and are not shared between gateway processes.
 
 This middleware limits how quickly requests reach BDS. It cannot release ports that BDS has already
 reserved, so the BDS UDP port range and reservation timeout still need to be configured safely.
+
+### Rate limit with Workers Rate Limiting bindings
+
+On Cloudflare Workers, `rateLimitBinding` counts requests with
+[Rate Limiting bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/).
+Each rule names a binding and a key. Keys work as in `rateLimit`: `'ip'`, `'global'`, or a function.
+The limit and period are set on the binding in the Wrangler configuration:
+
+```toml
+[[ratelimits]]
+name = "JOIN_IP_LIMITER"
+namespace_id = "1001"
+simple = { limit = 3, period = 60 }
+
+[[ratelimits]]
+name = "JOIN_XUID_LIMITER"
+namespace_id = "1002"
+simple = { limit = 2, period = 60 }
+```
+
+```ts
+import { NetherNetGateway } from 'nethernet-gateway';
+import { getConnInfo, rateLimitBinding } from 'nethernet-gateway/cloudflare-workers';
+import { createMinecraftClientTokenVerifier } from 'nethernet-gateway/minecraft';
+
+interface Env {
+  UPSTREAM: string;
+  JOIN_IP_LIMITER: RateLimit;
+  JOIN_XUID_LIMITER: RateLimit;
+}
+
+const gateway = new NetherNetGateway<{ Bindings: Env }>({
+  upstream: (c) => c.env.UPSTREAM,
+  verifyClientToken: createMinecraftClientTokenVerifier(),
+  getConnInfo,
+});
+
+gateway.use(
+  'join',
+  rateLimitBinding({
+    rules: [
+      { limiter: (c) => c.env.JOIN_IP_LIMITER, key: 'ip' },
+      { limiter: (c) => c.env.JOIN_XUID_LIMITER, key: (c) => c.identity.xuid },
+    ],
+    retryAfter: 60,
+  }),
+);
+```
+
+Rules are checked in order. Each check counts the request against that binding, and the first rule
+that rejects it returns `429 Too Many Requests`, with `Retry-After` when `retryAfter` is set. Later
+rules are not checked. The bindings report only whether a request is allowed, so passing responses
+carry no `RateLimit-*` headers. The `ip` key needs `getConnInfo`, as with `rateLimit`.
+
+Cloudflare counts approximately and separately in each Cloudflare location, so a request can pass
+a limit that has just been reached. Use these bindings to slow down individual clients by IP address
+or XUID. A `global` rule caps requests per location, not the total that reaches BDS. A strict
+deployment-wide limit needs shared state such as a Durable Object behind a `rateLimit.custom`-style
+middleware of your own.
 
 Server information and join attempts also have separate middleware stacks. A join middleware can pass a replacement request to `next()` to change the offer that reaches the upstream server. The gateway then parses the Network ID and offer again and repeats identity verification before running later join middleware.
 
@@ -231,7 +387,37 @@ const gateway = new NetherNetGateway({
 
 The verifier requires `exp` and `iat`, validates Minecraft's issuer, audience, RS256 signature, expiration and any not-before timestamp, identity claims, and client public key. It maps `xid` to `xuid`, `mid` to `playFabId`, and `xname` to `gamertag`, and accepts both observed `cpk` formats: a JWK object and a Base64-encoded DER SubjectPublicKeyInfo value.
 
-To trust another compatible authentication service or apply additional policy, provide your own `verifyClientToken` callback. The callback is responsible for validating the token and returning a complete `NetherNetIdentity` containing `xuid`, `playFabId`, `gamertag`, `cpk`, and `claims`; the gateway does not validate the callback's return shape. Tokens must still carry the `xid`, `mid`, and `xname` claims required for `untrustedIdentity`.
+The JWKS is cached in memory, so each new process or Workers isolate fetches it again. To also keep it in a store of your own, pass `jwks` with a `get` that returns the stored keys and a `set` that stores them. Both receive the request context first, so they can use a binding. On Cloudflare Workers, `kvJwks` builds the pair from a KV namespace:
+
+```ts
+import { kvJwks } from 'nethernet-gateway/cloudflare-workers';
+import { createMinecraftClientTokenVerifier } from 'nethernet-gateway/minecraft';
+
+interface Env {
+  KEYS: KVNamespace;
+}
+
+const verifyClientToken = createMinecraftClientTokenVerifier<{ Bindings: Env }>({
+  jwks: kvJwks((c) => c.env.KEYS),
+});
+```
+
+`kvJwks` stores the JWKS under the key `jwks` and expires it after one day, so that a key the service has withdrawn does not stay trusted; pass `{ key, expirationTtl }` to change either. For another store, write the pair yourself:
+
+```ts
+const verifyClientToken = createMinecraftClientTokenVerifier({
+  jwks: {
+    get: (c) => readJwks(),
+    set: (c, jwks) => writeJwks(jwks),
+  },
+});
+```
+
+The verifier uses the keys `get` returns. It fetches the JWKS only when `get` returns nothing or the stored keys lack the token's key, as after a key rotation, and passes what it fetched to `set`. Fetches triggered by unknown keys are at least 30 seconds apart. A token that a stored key fails to verify is rejected without fetching. A `get` that throws, or returns something other than a JWKS, counts as nothing stored. `set` runs under `c.executionCtx.waitUntil` where available and does not delay the join; its failures are ignored, so handle them inside the function.
+
+Either function may be left out. `get` alone reads keys that something else stores, such as a scheduled job that fetches `MINECRAFT_JWKS_URL`.
+
+To trust another compatible authentication service or apply additional policy, provide your own `verifyClientToken` callback. It receives the token and the request context. The callback is responsible for validating the token and returning a complete `NetherNetIdentity` containing `xuid`, `playFabId`, `gamertag`, `cpk`, and `claims`; the gateway does not validate the callback's return shape. Tokens must still carry the `xid`, `mid`, and `xname` claims required for `untrustedIdentity`.
 
 When a verifier is configured, its JWT verification and the SDP fingerprint binding must also succeed. Failures are rejected with `401`.
 
@@ -269,28 +455,30 @@ gateway.use('join', rewriteCandidates({ mapAddress: { ip: '203.0.113.10' } }));
 
 Set only `ip` to keep each candidate's own port, or only `port` to keep its address. Pass a function as `mapAddress` to choose the address for each join. It receives the addresses of the answer's candidates and the join context. Omit `mapAddress` to keep the routable candidates at their own address.
 
+`isIP` returns `4` or `6` for an address literal, which lets `mapAddress` advertise the address of the family the client connected with:
+
+```ts
+import { isIP, rewriteCandidates } from 'nethernet-gateway';
+
+gateway.use(
+  'join',
+  rewriteCandidates({
+    mapAddress: (_addresses, c) => ({
+      ip: isIP(c.remoteAddress ?? '') === 6 ? '2001:db8::10' : '203.0.113.10',
+    }),
+  }),
+);
+```
+
 When no candidate survives, the answer is returned unchanged, private candidates included, so the connection can still complete. Set `fallback: 'drop'` to remove the candidates instead.
 
 The related address of a reflexive or relayed candidate exposes the upstream server's own address. By default it is replaced with `0.0.0.0` or `::` and port `0`. Pass an object to replace only the `ip` or `port` it sets, leaving the other field as the upstream sent it, or `false` to keep the related address. A `port` that is not an integer from 0 to 65535 makes `rewriteCandidates` throw a `RangeError`. Error responses from the upstream server are passed through unchanged.
 
-## Use an existing Node server
-
-Bind `handleRequest` to the gateway when passing it to `createServer`.
-
-```ts
-import { createServer } from 'node:http';
-import { NetherNetGateway } from 'nethernet-gateway';
-
-const gateway = new NetherNetGateway({
-  upstream: 'http://127.0.0.1:19132',
-});
-
-createServer(gateway.handleRequest.bind(gateway)).listen(8080);
-```
-
 ## Observe request errors
 
-Unexpected request, middleware, upstream, and response failures are emitted for logging and metrics.
+Unexpected request, middleware, and upstream failures are emitted for logging and metrics. Failures
+to read a Node.js request or write its response happen outside the gateway, so they are passed to
+the `onError` option of `serve` or `getRequestListener` instead, which defaults to `console.error`.
 
 ```ts
 gateway.on('requestError', ({ source, error, method, url }) => {
@@ -317,7 +505,15 @@ gateway.on('join', ({ status, networkId, untrustedIdentity, identity }) => {
 });
 ```
 
-These events fire once for each valid request forwarded upstream, after the final response is known. They do not fire for early middleware responses or rejected join offers. `status` is the status of the response sent to the client, after every middleware has run: an unreachable upstream gives `502`, and a middleware that replaces the response or throws after `next()` gives its own status or `500`. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `info` also includes the final `client` information, and `join` includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+These events fire once for each valid request forwarded upstream, after the final response is known. They do not fire for early middleware responses or rejected join offers. `status` is the status of the response sent to the client, after every middleware has run: an unreachable upstream gives `502`, one that exceeds `upstreamTimeout` gives `504`, and a middleware that replaces the response or throws after `next()` gives its own status or `500`. The event includes the final URL (path and query string), direct peer address, and a detached `Headers` snapshot. `info` also includes the final `client` information, and `join` includes the final Network ID and identities after any request replacement; like `c.identity`, its `identity` exists only on a gateway with `verifyClientToken`. The `untrustedIdentity` values are client-supplied and must not be used for authorization. An exception in a listener is reported through `requestError` with source `listener` without changing the HTTP response.
+
+Every event also carries the request's `env` and `executionCtx`, as middleware reads them from `c`. Listeners are not awaited, so on Cloudflare Workers pass async work to `waitUntil`:
+
+```ts
+gateway.on('join', ({ env, executionCtx, networkId, status }) => {
+  executionCtx?.waitUntil(env.JOIN_LOG.writeDataPoint({ blobs: [networkId], doubles: [status] }));
+});
+```
 
 ## Log requests
 
@@ -342,7 +538,7 @@ gateway.use(logger((line) => appLogger.info(line)));
 - Put the public signaling endpoint behind HTTPS. TLS termination is outside this package.
 - `untrustedIdentity` is decoded client input, not an authenticated identity. Never use it for authorization.
 - When `verifyClientToken` is configured, invalid token or fingerprint signatures are rejected before the offer reaches the upstream server.
-- Request bodies larger than 1 MiB are rejected with `413` before middleware runs. SDP offers must also be valid UTF-8.
+- On Node.js, request bodies larger than 1 MiB are rejected with `413` before middleware runs. On every runtime, SDP offers larger than 1 MiB are rejected with `413` and must be valid UTF-8.
 - To hide the addresses of the backend, use `rewriteCandidates` with `mapAddress` and `fallback: 'drop'`. (See the "Rewrite ICE candidates" section.)
 
 ## Acknowledgements

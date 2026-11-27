@@ -166,9 +166,6 @@ importers:
 
   .:
     dependencies:
-      httpxy:
-        specifier: ^0.5.5
-        version: 0.5.5
       jose:
         specifier: ^6.2.12
         version: 6.2.12
@@ -861,9 +858,6 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
-
-  httpxy@0.5.5:
-    resolution: {integrity: sha512-uDjmnPyp1q4Sgzf3w+J/Fc6UqcCEj0x4Wjp7OqK5dGhNeDgpyrAmnS6ey8QWrX3SWDon2DMKf9sBa5X9+CVyMA==}
 
   jose@6.2.12:
     resolution: {integrity: sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw==}
@@ -1567,8 +1561,6 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
-
-  httpxy@0.5.5: {}
 
   jose@6.2.12: {}
 

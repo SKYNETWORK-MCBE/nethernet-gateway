@@ -28,10 +28,51 @@ export interface UntrustedNetherNetIdentity {
   readonly claims: Readonly<Record<string, unknown>>;
 }
 
-export type VerifyClientToken = (token: string) => Awaitable<NetherNetIdentity>;
+/**
+ * Authenticates a client token. It also receives the request context, so it can read `c.env`,
+ * for example to load trusted keys from a binding.
+ */
+export type VerifyClientToken = (token: string, c: GatewayContext) => Awaitable<NetherNetIdentity>;
 
-export interface NetherNetGatewayErrorEvent {
-  readonly source: 'request' | 'middleware' | 'upstream' | 'response' | 'listener';
+/** An execution context that can extend the request lifetime, such as on Cloudflare Workers. */
+export interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException?(): void;
+}
+
+/** Connection details resolved by a runtime adapter's `getConnInfo`. */
+export interface ConnInfo {
+  readonly remote: {
+    readonly address?: string | undefined;
+  };
+}
+
+/** Resolves connection details from the runtime's request and bindings. */
+export type GetConnInfo = (c: { readonly req: Request; readonly env: unknown }) => ConnInfo;
+
+/**
+ * Types supplied to the gateway, such as `new NetherNetGateway<{ Bindings: Env }>(options)`.
+ * `Bindings` is the type of the second `fetch` argument, which middleware reads as `c.env`.
+ */
+export interface GatewayEnv {
+  Bindings?: unknown;
+}
+
+/** The type of `c.env`: the supplied `Bindings`, or `unknown` without one. */
+export type BindingsOf<E extends GatewayEnv> = E extends { Bindings: infer B } ? B : unknown;
+
+/** The runtime arguments of the request an event belongs to. */
+export interface NetherNetGatewayEventRuntime<E extends GatewayEnv = GatewayEnv> {
+  /** The second `fetch` argument, as in `c.env`. */
+  readonly env: BindingsOf<E>;
+  /** The third `fetch` argument, as in `c.executionCtx`. Use it to `waitUntil` async work. */
+  readonly executionCtx: ExecutionContext | undefined;
+}
+
+export interface NetherNetGatewayErrorEvent<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayEventRuntime<E> {
+  readonly source: 'request' | 'middleware' | 'upstream' | 'listener';
   readonly error: unknown;
   readonly method: string;
   readonly url: string;
@@ -54,7 +95,9 @@ export interface ClientInfo {
 }
 
 /** Fields shared by the `info` and `join` events. Headers are a detached snapshot. */
-export interface NetherNetGatewayRequestEvent {
+export interface NetherNetGatewayRequestEvent<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayEventRuntime<E> {
   readonly url: string;
   readonly remoteAddress: string | undefined;
   readonly headers: Headers;
@@ -63,7 +106,9 @@ export interface NetherNetGatewayRequestEvent {
 }
 
 /** A server information request that was forwarded upstream. Headers are a detached snapshot. */
-export interface NetherNetGatewayInfoEvent extends NetherNetGatewayRequestEvent {
+export interface NetherNetGatewayInfoEvent<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayRequestEvent<E> {
   readonly client: ClientInfo;
 }
 
@@ -79,37 +124,53 @@ export type JoinIdentity<Verified extends boolean = boolean> = [Verified] extend
     : { readonly identity?: NetherNetIdentity | undefined };
 
 /** A join event without its verified identity; see {@link NetherNetGatewayJoinEvent}. */
-export interface NetherNetGatewayJoinEventBase extends NetherNetGatewayRequestEvent {
+export interface NetherNetGatewayJoinEventBase<
+  E extends GatewayEnv = GatewayEnv,
+> extends NetherNetGatewayRequestEvent<E> {
   readonly networkId: string;
   /** Client-supplied claims that may be forged. Never use these for authorization. */
   readonly untrustedIdentity: UntrustedNetherNetIdentity;
 }
 
 /** A validated join offer that was forwarded upstream. Headers are a detached snapshot. */
-export type NetherNetGatewayJoinEvent<Verified extends boolean = boolean> =
-  NetherNetGatewayJoinEventBase & JoinIdentity<Verified>;
+export type NetherNetGatewayJoinEvent<
+  E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
+> = NetherNetGatewayJoinEventBase<E> & JoinIdentity<Verified>;
 
-export interface GatewayContext {
+export interface GatewayContext<E extends GatewayEnv = GatewayEnv> {
   readonly req: Request;
   readonly url: URL;
-  /** The direct peer address. Use a custom key generator when running behind a trusted proxy. */
+  /**
+   * The peer address resolved by the gateway's `getConnInfo`, or `undefined` without one.
+   * Use a custom key generator when running behind a trusted proxy.
+   */
   readonly remoteAddress: string | undefined;
+  /**
+   * The runtime-specific second `fetch` argument, such as bindings or server information. Its
+   * type is the `Bindings` supplied to the gateway.
+   */
+  readonly env: BindingsOf<E>;
+  /** The runtime-specific third `fetch` argument, if the runtime passes one. */
+  readonly executionCtx: ExecutionContext | undefined;
 }
 
-export interface ServerInfoContext extends GatewayContext {
+export interface ServerInfoContext<E extends GatewayEnv = GatewayEnv> extends GatewayContext<E> {
   readonly client: ClientInfo;
 }
 
 /** A join context without its verified identity; see {@link JoinContext}. */
-export interface JoinContextBase extends GatewayContext {
+export interface JoinContextBase<E extends GatewayEnv = GatewayEnv> extends GatewayContext<E> {
   readonly networkId: string;
   readonly offer: string;
   /** Client-supplied claims that may be forged. Never use these for authorization. */
   readonly untrustedIdentity: UntrustedNetherNetIdentity;
 }
 
-export type JoinContext<Verified extends boolean = boolean> = JoinContextBase &
-  JoinIdentity<Verified>;
+export type JoinContext<
+  E extends GatewayEnv = GatewayEnv,
+  Verified extends boolean = boolean,
+> = JoinContextBase<E> & JoinIdentity<Verified>;
 
 /** A middleware can pass a replacement request to change the request sent downstream. */
 export type Next = (req?: Request) => Promise<Response>;
